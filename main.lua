@@ -1,3 +1,8 @@
+-- ============================================================================
+-- INDEPENDENT ROPE SYSTEM
+-- Ropes are now managed in a global rope collection and rendered independently
+-- ============================================================================
+
 function love.load()
     -- Game state
     game = {
@@ -6,17 +11,21 @@ function love.load()
     }
     
     -- Physics world setup
-    love.physics.setMeter(64) -- 1 meter = 64 pixels
+    love.physics.setMeter(64)
     world = love.physics.newWorld(0, 9.81 * 64, true)
     
-    -- Game objects
+    -- Game object collections
     boundaries = {}
     PlayerX = {}
-    box_i = {}
+    boxes = {}      -- Separate box collection
     particles = {}
     enemies = {}
     balls = {}
     damageEffects = {}
+    
+    -- NEW: Independent rope collection
+    ropes = {}       -- Each rope: {id, segments, joint1, joint2, obj1, obj2, anchor1, anchor2}
+    nextRopeId = 1
     
     createBoundaries()
     createPlayer()
@@ -24,11 +33,9 @@ function love.load()
     createBoxes()
     createBalls()
     
-    -- Enhanced Camera setup
+    -- Camera setup
     camera = {
-        x = 0, 
-        y = 0, 
-        scale = 1,
+        x = 0, y = 0, scale = 1,
         mode = "follow_player",
         target = nil,
         freeMoveSpeed = 300,
@@ -36,21 +43,14 @@ function love.load()
         maxScale = 3.0
     }
     
-    -- Camera mode instructions
+    -- UI instructions
     cameraInstructions = {
-        "F1: Follow Player",
-        "F2: Follow Enemy", 
-        "F3: Free Move",
-        "Wheel or -/+: Zoom",
-        "WASD: Free Move",
-        "R: Reset Zoom",
-        "F5: Toggle Debug Mode",
-        "SPACE: Grab/Release Object",
-        "E: Grab Enemy/Box",
-        "SHIFT: Connect two objects & detach"
+        "F1: Follow Player", "F2: Follow Enemy", "F3: Free Move",
+        "Wheel or -/+: Zoom", "WASD: Free Move", "R: Reset Zoom",
+        "F5: Toggle Debug Mode", "SPACE: Grab/Release Object",
+        "E: Grab Enemy/Box", "SHIFT: Connect two objects & detach"
     }
     
-    -- Debug info
     debugInfo = {
         showPlayerVectors = true,
         showThrusterDirection = true,
@@ -72,36 +72,38 @@ function love.update(dt)
     updateDamageEffects(dt)
     updateCamera(dt)
     checkCollisions()
+    
+    -- NEW: Update rope visual segments (positions for rendering)
+    updateRopeVisuals()
 end
 
 function love.draw()
     love.graphics.clear(0.15, 0.15, 0.15)
     love.graphics.push()
     
-    -- Apply camera transform
     love.graphics.translate(love.graphics.getWidth()/2, love.graphics.getHeight()/2)
     love.graphics.scale(camera.scale)
     love.graphics.translate(-camera.x, -camera.y)
     
-    -- Draw sun
     love.graphics.circle("fill", 0, 0, 12.5)
     
     local oldFont = love.graphics.getFont()
     local smallFont = love.graphics.newFont(8)
     love.graphics.setFont(smallFont)
-
-    -- Draw all objects
+    
     drawBoundaries()
     drawBoxes()
     drawEnemies()
     drawBalls()
     drawPlayer(PlayerX[1])
+    
+    -- NEW: Draw ropes independently
+    drawAllRopes()
+    
     drawParticles()
     drawDamageEffects()
     
     love.graphics.setFont(oldFont)
-    
-    -- Debug drawings
     if game.debugMode then drawDebugInfo() end
     
     love.graphics.pop()
@@ -120,149 +122,420 @@ function love.keypressed(key)
     elseif key == "p" then game.state = (game.state == "playing") and "paused" or "playing"
     elseif key == "space" then
         if PlayerX[1] then
-            -- Only release ropes if BOTH ropes are attached
-            if PlayerX[1].rope1 and PlayerX[1].rope2 then 
-                releaseRope(PlayerX[1]) 
+            if PlayerX[1].ropeIds and #PlayerX[1].ropeIds == 2 then 
+                releaseBothRopes(PlayerX[1]) 
             else 
                 grabObject() 
             end
         end
     elseif key == "e" then
-        if PlayerX[1] and not (PlayerX[1].rope1 and PlayerX[1].rope2) then 
+        if PlayerX[1] and #(PlayerX[1].ropeIds or {}) < 2 then 
             grabEnemy() 
         end
     elseif key == "lshift" or key == "rshift" then
-        if PlayerX[1] then
-            -- Only connect when BOTH ropes are attached
-            if PlayerX[1].rope1 and PlayerX[1].rope2 then
-                connectTwoObjectsAndDetach()
-            end
+        if PlayerX[1] and PlayerX[1].ropeIds and #PlayerX[1].ropeIds == 2 then
+            connectTwoObjectsAndDetach()
         end
     end
 end
 
 function love.wheelmoved(x, y)
     local zoomFactor = 1.1
-    if y > 0 then camera.scale = math.min(camera.scale * zoomFactor, camera.maxScale)
-    elseif y < 0 then camera.scale = math.max(camera.scale / zoomFactor, camera.minScale)
+    if y > 0 then camera.scale = math.min(camera.scale * zoomFactor, 3.0)
+    elseif y < 0 then camera.scale = math.max(camera.scale / zoomFactor, 0.1)
     end
 end
 
--- UI and Debug Functions
-function drawUI()
-    love.graphics.setColor(1, 1, 1)
-    love.graphics.print("State: " .. game.state, 10, 10)
+-- ============================================================================
+-- INDEPENDENT ROPE CORE FUNCTIONS
+
+function createIndependentRope(obj1, obj2)
+    if not obj1 or not obj2 or not obj1.body or not obj2.body then return nil end
+    if obj1.body:isDestroyed() or obj2.body:isDestroyed() then return nil end
     
-    if PlayerX[1] then
-        local px, py = PlayerX[1].body:getPosition()
-        love.graphics.print("Player Position: " .. math.floor(px) .. ", " .. math.floor(py), 10, 30)
+    -- Get edge attachment points
+    local cx2, cy2 = obj2.body:getPosition()
+    local anchor1X, anchor1Y = getEdgePoint(obj1, cx2, cy2)
+    
+    local cx1, cy1 = obj1.body:getPosition()
+    local anchor2X, anchor2Y = getEdgePoint(obj2, cx1, cy1)
+    
+    -- Calculate rope parameters
+    local dx, dy = anchor2X - anchor1X, anchor2Y - anchor1Y
+    local distance = math.sqrt(dx*dx + dy*dy)
+    local numSegments = math.max(3, math.min(15, math.floor(distance / 10)))
+    local angle = math.atan2(dy, dx)
+    local segLength = distance / numSegments
+    local segThickness = 3
+    local ux, uy = dx / distance, dy / distance
+    
+    local segments = {}
+    local joints = {}
+    local prevBody = obj1.body
+    local prevX, prevY = anchor1X, anchor1Y
+    
+    -- Create physics bodies for each rope segment
+    for i = 1, numSegments do
+        local cx = anchor1X + ux * (segLength * (i - 0.5))
+        local cy = anchor1Y + uy * (segLength * (i - 0.5))
         
-        -- Display rope status
-        if PlayerX[1].rope1 then
-            love.graphics.setColor(0.3, 1, 0.3)
-            love.graphics.print("Rope 1: Connected!", 10, 250)
-        end
-        if PlayerX[1].rope2 then
-            love.graphics.setColor(0.3, 0.3, 1)
-            love.graphics.print("Rope 2: Connected!", 10, 270)
-        end
-        if not PlayerX[1].rope1 and not PlayerX[1].rope2 then
-            love.graphics.setColor(1, 1, 1)
-            love.graphics.print("No ropes attached", 10, 250)
-        end
-        love.graphics.setColor(1, 1, 1)
+        local segBody = love.physics.newBody(world, cx, cy, "dynamic")
+        segBody:setAngle(angle)
+        
+        local segShape = love.physics.newRectangleShape(segLength, segThickness)
+        local segFixture = love.physics.newFixture(segBody, segShape, 0.5)
+        segFixture:setSensor(true)
+        segFixture:setFriction(0.2)
+        
+        segBody:setLinearDamping(8.0)
+        segBody:setAngularDamping(8.0)
+        
+        table.insert(segments, segBody)
+        
+        -- Joint to previous body
+        table.insert(joints, love.physics.newRevoluteJoint(prevBody, segBody, prevX, prevY, false))
+        
+        prevBody = segBody
+        prevX = anchor1X + ux * (segLength * i)
+        prevY = anchor1Y + uy * (segLength * i)
     end
     
-    love.graphics.print("Camera Mode: " .. camera.mode, 10, 50)
-    love.graphics.print("Zoom: " .. string.format("%.2f", camera.scale), 10, 70)
+    -- Final joint to second object
+    table.insert(joints, love.physics.newRevoluteJoint(prevBody, obj2.body, anchor2X, anchor2Y, false))
     
+    -- Limit rope joint
+    local limitRope = love.physics.newRopeJoint(obj1.body, obj2.body, anchor1X, anchor1Y, anchor2X, anchor2Y, distance + 2, false)
+    
+    -- Create rope record
+    local ropeId = nextRopeId
+    nextRopeId = nextRopeId + 1
+    
+    local rope = {
+        id = ropeId,
+        segments = segments,
+        joints = joints,
+        limitRope = limitRope,
+        obj1 = obj1,
+        obj2 = obj2,
+        anchor1 = {x = anchor1X, y = anchor1Y},
+        anchor2 = {x = anchor2X, y = anchor2Y},
+        numSegments = numSegments,
+        isDestroyed = false
+    }
+    
+    -- Store rope in global collection
+    ropes[ropeId] = rope
+    
+    -- Register rope with objects
+    obj1.ropeIds = obj1.ropeIds or {}
+    obj2.ropeIds = obj2.ropeIds or {}
+    table.insert(obj1.ropeIds, ropeId)
+    table.insert(obj2.ropeIds, ropeId)
+    
+    return ropeId
+end
+-- ============================================================================
+
+function updateRopeVisuals()
+    for id, rope in pairs(ropes) do
+        if rope.isDestroyed then
+            ropes[id] = nil
+        else
+            -- Check if objects still exist
+            if not rope.obj1 or not rope.obj2 or not rope.obj1.body or not rope.obj2.body or 
+               rope.obj1.body:isDestroyed() or rope.obj2.body:isDestroyed() then
+                destroyRopeById(id)
+            else
+                -- Update anchor positions to maintain edge attachment
+                local cx2, cy2 = rope.obj2.body:getPosition()
+                local ax, ay = getEdgePoint(rope.obj1, cx2, cy2)
+                rope.anchor1 = {x = ax, y = ay}
+                
+                local cx1, cy1 = rope.obj1.body:getPosition()
+                local ax2, ay2 = getEdgePoint(rope.obj2, cx1, cy1)
+                rope.anchor2 = {x = ax2, y = ay2}
+            end
+        end
+    end
+end
+
+function drawAllRopes()
+    for id, rope in pairs(ropes) do
+        if not rope.isDestroyed then
+            drawRope(rope)
+        end
+    end
+end
+
+function drawRope(rope)
+    if not rope or rope.isDestroyed then return end
+    if not rope.segments or #rope.segments == 0 then return end
+    
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.setLineWidth(1)
+    
+    -- Draw from anchor1 through each segment to anchor2
+    local prevX, prevY = rope.anchor1.x, rope.anchor1.y
+    
+    -- Draw lines through each segment body
+    for i, segBody in ipairs(rope.segments) do
+        if segBody and not segBody:isDestroyed() then
+            local currX, currY = segBody:getPosition()
+            if prevX and prevY and currX and currY then
+                love.graphics.line(prevX, prevY, currX, currY)
+            end
+            prevX, prevY = currX, currY
+        end
+    end
+    
+    -- Draw final line to anchor2
+    if prevX and prevY and rope.anchor2.x and rope.anchor2.y then
+        love.graphics.line(prevX, prevY, rope.anchor2.x, rope.anchor2.y)
+    end
+    
+    love.graphics.setLineWidth(1)
+    
+    -- Optional: Draw segment bodies for debug
     if game.debugMode then
-        love.graphics.setColor(1, 0, 0)
-        love.graphics.print("DEBUG MODE ACTIVE", 10, 90)
-        love.graphics.setColor(1, 1, 1)
-    end
-    
-    love.graphics.print("Controls:", love.graphics.getWidth() - 200, 10)
-    for i, instruction in ipairs(cameraInstructions) do
-        love.graphics.print(instruction, love.graphics.getWidth() - 200, 10 + i * 20)
-    end
-    
-    love.graphics.print("Game Controls:", love.graphics.getWidth() - 200, 210)
-    love.graphics.print("Arrow Keys: Move Player", love.graphics.getWidth() - 200, 230)
-    love.graphics.print("PageUp/Down: Rotate", love.graphics.getWidth() - 200, 250)
-    love.graphics.print("P: Pause/Resume", love.graphics.getWidth() - 200, 270)
-end
-
-function drawDebugInfo()
-    if PlayerX[1] then drawPlayerDebugInfo(PlayerX[1]) end
-    for _, enemy in ipairs(enemies) do drawEnemyDebugInfo(enemy) end
-    if debugInfo.showPhysicsInfo then drawPhysicsDebug() end
-end
-
-function drawPlayerDebugInfo(player)
-    local body = player.body
-    local x, y = body:getPosition()
-    local angle = body:getAngle()
-    
-    if debugInfo.showPlayerVectors then
-        local length = 50
-        love.graphics.setColor(1, 0, 0, 0.8)
-        love.graphics.line(x, y, x + math.cos(angle) * length, y + math.sin(angle) * length)
-        love.graphics.setColor(0, 1, 0, 0.8)
-        love.graphics.line(x, y, x + math.cos(angle + math.pi/2) * length, y + math.sin(angle + math.pi/2) * length)
-    end
-    
-    local vx, vy = body:getLinearVelocity()
-    love.graphics.setColor(0, 0.5, 1, 0.8)
-    love.graphics.line(x, y, x + vx, y + vy)
-end
-
-function drawEnemyDebugInfo(enemy)
-    local body = enemy.body
-    local x, y = body:getPosition()
-    if PlayerX[1] then
-        local px, py = PlayerX[1].body:getPosition()
-        love.graphics.setColor(1, 0, 0, 0.5)
-        love.graphics.line(x, y, px, py)
-    end
-    local vx, vy = body:getLinearVelocity()
-    love.graphics.setColor(1, 0.5, 0.5, 0.8)
-    love.graphics.line(x, y, x + vx, y + vy)
-end
-
-function drawPhysicsDebug()
-    love.graphics.setColor(0, 0.5, 0, 0.3)
-    for _, boundary in ipairs(boundaries) do
-        love.graphics.polygon("line", boundary.body:getWorldPoints(boundary.shape:getPoints()))
-    end
-    love.graphics.setColor(0.5, 0.5, 0, 0.3)
-    for _, box in ipairs(box_i) do
-        if box.type == "box" then
-            love.graphics.polygon("line", box.body:getWorldPoints(box.shape:getPoints()))
+        love.graphics.setColor(0.5, 0.5, 0.5, 0.5)
+        for _, segBody in ipairs(rope.segments) do
+            if segBody and not segBody:isDestroyed() then
+                local fixtures = segBody:getFixtures()
+                if fixtures[1] then
+                    local shape = fixtures[1]:getShape()
+                    if shape:getType() == "polygon" then
+                        love.graphics.polygon("line", segBody:getWorldPoints(shape:getPoints()))
+                    end
+                end
+            end
         end
     end
 end
 
-function updateCamera(dt)
-    if camera.mode == "follow_player" and PlayerX[1] then
-        local targetX, targetY = PlayerX[1].body:getPosition()
-        camera.x = camera.x + (targetX - camera.x) * 0.99
-        camera.y = camera.y + (targetY - camera.y) * 0.99
-    elseif camera.mode == "follow_enemy" then
-        local enemy = enemies[1]
-        if enemy and enemy.body and not enemy.body:isDestroyed() then
-            camera.target = enemy
-            local targetX, targetY = enemy.body:getPosition()
-            camera.x = camera.x + (targetX - camera.x) * 0.99
-            camera.y = camera.y + (targetY - camera.y) * 0.99
-        end
-    elseif camera.mode == "free_move" then
-        local speed = camera.freeMoveSpeed * dt / camera.scale
-        if love.keyboard.isDown("w") or love.keyboard.isDown("up") then camera.y = camera.y - speed end
-        if love.keyboard.isDown("s") or love.keyboard.isDown("down") then camera.y = camera.y + speed end
-        if love.keyboard.isDown("a") or love.keyboard.isDown("left") then camera.x = camera.x - speed end
-        if love.keyboard.isDown("d") or love.keyboard.isDown("right") then camera.x = camera.x + speed end
+function destroyRopeById(ropeId)
+    local rope = ropes[ropeId]
+    if not rope or rope.isDestroyed then return end
+    
+    -- Destroy physics components
+    if rope.limitRope and not rope.limitRope:isDestroyed() then
+        rope.limitRope:destroy()
     end
+    if rope.joints then
+        for _, joint in ipairs(rope.joints) do
+            if joint and not joint:isDestroyed() then joint:destroy() end
+        end
+    end
+    if rope.segments then
+        for _, body in ipairs(rope.segments) do
+            if body and not body:isDestroyed() then body:destroy() end
+        end
+    end
+    
+    -- Remove rope from objects' rope lists
+    if rope.obj1 and rope.obj1.ropeIds then
+        for i, rid in ipairs(rope.obj1.ropeIds) do
+            if rid == ropeId then table.remove(rope.obj1.ropeIds, i); break end
+        end
+    end
+    if rope.obj2 and rope.obj2.ropeIds then
+        for i, rid in ipairs(rope.obj2.ropeIds) do
+            if rid == ropeId then table.remove(rope.obj2.ropeIds, i); break end
+        end
+    end
+    
+    rope.isDestroyed = true
+    ropes[ropeId] = nil
+end
+
+function destroyAllRopesForObject(obj)
+    if not obj or not obj.ropeIds then return end
+    local ropeIdsCopy = {}
+    for _, id in ipairs(obj.ropeIds) do table.insert(ropeIdsCopy, id) end
+    for _, id in ipairs(ropeIdsCopy) do
+        destroyRopeById(id)
+    end
+    obj.ropeIds = {}
+end
+
+function getPlayerRopeIds(player)
+    if not player then return {} end
+    return player.ropeIds or {}
+end
+
+function ropeConnectsTo(obj1, obj2)
+    if not obj1.ropeIds then return false end
+    for _, ropeId in ipairs(obj1.ropeIds) do
+        local rope = ropes[ropeId]
+        if rope and ((rope.obj1 == obj2) or (rope.obj2 == obj2)) then
+            return true
+        end
+    end
+    return false
+end
+
+function releaseBothRopes(player)
+    if not player then return end
+    destroyAllRopesForObject(player)
+end
+
+
+-- ============================================================================
+-- OBJECT GRABBING AND CONNECTION
+-- ============================================================================
+
+function grabObject()
+    local player = PlayerX[1]
+    if not player or #(player.ropeIds or {}) >= 2 then return end
+    
+    local px, py = player.body:getWorldPoint(0, player.h / 2)
+    local closestObj, closestDist = nil, 200
+    
+    -- Check boxes
+    for _, obj in ipairs(boxes) do
+        if obj.body and not obj.body:isDestroyed() then
+            if ropeConnectsTo(player, obj) then goto continue end
+            local ox, oy = obj.body:getPosition()
+            local dist = math.sqrt((px-ox)^2 + (py-oy)^2)
+            if dist < closestDist then
+                closestDist = dist
+                closestObj = obj
+            end
+        end
+        ::continue::
+    end
+    
+    -- Check balls
+    for _, obj in ipairs(balls) do
+        if obj.body and not obj.body:isDestroyed() then
+            if ropeConnectsTo(player, obj) then goto continue2 end
+            local ox, oy = obj.body:getPosition()
+            local dist = math.sqrt((px-ox)^2 + (py-oy)^2)
+            if dist < closestDist then
+                closestDist = dist
+                closestObj = obj
+            end
+        end
+        ::continue2::
+    end
+    
+    if closestObj then
+        createIndependentRope(player, closestObj)
+    end
+end
+
+function grabEnemy()
+    local player = PlayerX[1]
+    if not player or #(player.ropeIds or {}) >= 2 then return end
+    
+    local px, py = player.body:getWorldPoint(0, player.h / 2)
+    local closestEnemy, closestDist = nil, 200
+    
+    for _, enemy in ipairs(enemies) do
+        if enemy.body and not enemy.body:isDestroyed() then
+            if ropeConnectsTo(player, enemy) then goto continue end
+            local ex, ey = enemy.body:getPosition()
+            local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
+            if dist < closestDist then
+                closestDist = dist
+                closestEnemy = enemy
+            end
+        end
+        ::continue::
+    end
+    
+    if closestEnemy then
+        createIndependentRope(player, closestEnemy)
+    end
+end
+
+function ropeConnectsTo(obj1, obj2)
+    if not obj1.ropeIds then return false end
+    for _, ropeId in ipairs(obj1.ropeIds) do
+        local rope = ropes[ropeId]
+        if rope and ((rope.obj1 == obj2) or (rope.obj2 == obj2)) then
+            return true
+        end
+    end
+    return false
+end
+
+function connectTwoObjectsAndDetach()
+    local player = PlayerX[1]
+    if not player or not player.ropeIds or #player.ropeIds ~= 2 then return end
+    
+    local ropeIds = {}
+    for _, id in ipairs(player.ropeIds) do
+        table.insert(ropeIds, id)
+    end
+    
+    if #ropeIds < 2 then return end
+    
+    local rope1 = ropes[ropeIds[1]]
+    local rope2 = ropes[ropeIds[2]]
+    
+    if not rope1 or not rope2 then return end
+    
+    local obj1 = (rope1.obj1 == player) and rope1.obj2 or rope1.obj1
+    local obj2 = (rope2.obj1 == player) and rope2.obj2 or rope2.obj1
+    
+    if not obj1 or not obj2 or not obj1.body or not obj2.body then return end
+    if obj1.body:isDestroyed() or obj2.body:isDestroyed() then return end
+    
+    -- Destroy both player ropes
+    destroyRopeById(ropeIds[1])
+    destroyRopeById(ropeIds[2])
+    
+    -- Create new rope directly between the two objects
+    createIndependentRope(obj1, obj2)
+    
+    -- Create visual effect at connection point
+    local jx, jy = player.body:getWorldPoint(0, player.h / 2)
+    for i = 1, 20 do createDamageEffect(jx, jy) end
+end
+
+function removeRopeConnecting(ropeId)
+    destroyRopeById(ropeId)
+end
+
+
+-- ============================================================================
+-- HELPER FUNCTIONS
+-- ============================================================================
+
+function getEdgePoint(obj, targetX, targetY)
+    if not obj or not obj.body then return targetX, targetY end
+    if obj.body:isDestroyed() then return targetX, targetY end
+    
+    local cx, cy = obj.body:getPosition()
+    local dx, dy = targetX - cx, targetY - cy
+    local dist = math.sqrt(dx*dx + dy*dy)
+    if dist == 0 then return cx, cy end
+    dx, dy = dx/dist, dy/dist
+
+    if obj.type == "ball" then
+        return cx + dx * obj.r, cy + dy * obj.r
+    elseif obj.type == "box" or obj.type == "enemy" or obj.type == "player" then
+        local angle = obj.body:getAngle()
+        local cosA, sinA = math.cos(-angle), math.sin(-angle)
+        
+        local ldx = dx * cosA - dy * sinA
+        local ldy = dx * sinA + dy * cosA
+        
+        local hw = (obj.w or 20) / 2
+        local hh = (obj.h or 20) / 2
+        
+        local tx = (ldx ~= 0) and math.abs(hw / ldx) or math.huge
+        local ty = (ldy ~= 0) and math.abs(hh / ldy) or math.huge
+        local t = math.min(tx, ty)
+        
+        local lx = ldx * t
+        local ly = ldy * t
+        
+        cosA, sinA = math.cos(angle), math.sin(angle)
+        return cx + (lx * cosA - ly * sinA), cy + (lx * sinA + ly * cosA)
+    end
+    
+    return cx, cy
 end
 
 -- ============================================================================
@@ -282,8 +555,8 @@ function checkCollisions()
                 end
             end
         end
-        for _, box in ipairs(box_i) do
-            if box.type == "box" and box.body and not box.body:isDestroyed() then
+        for _, box in ipairs(boxes) do
+            if box.body and not box.body:isDestroyed() then
                 local bx, by = box.body:getPosition()
                 local dx, dy = px - bx, py - by
                 if math.sqrt(dx*dx + dy*dy) < 40 then
@@ -298,9 +571,8 @@ end
 function applyDamage(obj, damage)
     if not obj or not obj.health then return end
     
-    -- For boxes, damage is reduced based on slice depth (makes them harder)
     if obj.type == "box" and obj.sliceDepth then
-        local damageReduction = math.pow(0.85, obj.sliceDepth)  -- 15% less damage per depth
+        local damageReduction = math.pow(0.85, obj.sliceDepth)
         damage = damage * damageReduction
     end
     
@@ -317,32 +589,11 @@ function destroyObject(obj)
     
     local x, y = obj.body:getPosition()
     
-    -- Create damage effects on destruction/slicing
     for i = 1, 20 do createDamageEffect(x, y) end
     
-    -- Safely destroy independent merged ropes attached to this object
-    if obj.rope then
-        destroyRope(obj.rope)
-    end
+    -- Destroy all ropes connected to this object
+    destroyAllRopesForObject(obj)
     
-    -- Check if this object is roped by an enemy
-    for _, enemy in ipairs(enemies) do
-        if enemy.rope and enemy.rope.object == obj then
-            destroyRope(enemy.rope)
-        end
-    end
-    
-    -- Check if player is holding this object
-    if PlayerX[1] then
-        if PlayerX[1].rope1 and PlayerX[1].rope1.object == obj then
-            releaseSingleRope(PlayerX[1], 1)
-        end
-        if PlayerX[1].rope2 and PlayerX[1].rope2.object == obj then
-            releaseSingleRope(PlayerX[1], 2)
-        end
-    end
-    
-    -- Handle different object types removal
     if obj.type == "enemy" then
         for i, enemy in ipairs(enemies) do
             if enemy == obj then table.remove(enemies, i); break end
@@ -351,8 +602,8 @@ function destroyObject(obj)
         
     elseif obj.type == "box" then
         sliceBox(obj)
-        for i, box in ipairs(box_i) do
-            if box == obj then table.remove(box_i, i); break end
+        for i, box in ipairs(boxes) do
+            if box == obj then table.remove(boxes, i); break end
         end
         if obj.body and not obj.body:isDestroyed() then obj.body:destroy() end
         
@@ -360,8 +611,8 @@ function destroyObject(obj)
         for i, ball in ipairs(balls) do
             if ball == obj then table.remove(balls, i); break end
         end
-        for i, box in ipairs(box_i) do
-            if box == obj then table.remove(box_i, i); break end
+        for i, box in ipairs(boxes) do
+            if box == obj then table.remove(boxes, i); break end
         end
         if obj.body and not obj.body:isDestroyed() then obj.body:destroy() end
     end
@@ -375,8 +626,7 @@ function sliceBox(box)
     local w = box.w
     local h = box.h
     
-    -- Determine which side is larger to slice along that axis
-    local sliceVertical = (w >= h)  -- Slice along vertical axis if width >= height
+    local sliceVertical = (w >= h)
     
     local newWidth1, newWidth2, newHeight1, newHeight2
     local sliceOffset
@@ -395,13 +645,11 @@ function sliceBox(box)
         newHeight2 = h - sliceOffset
     end
     
-    -- Ensure minimum size for boxes
     local minSize = 5
     if newWidth1 < minSize or newWidth2 < minSize or newHeight1 < minSize or newHeight2 < minSize then
         return
     end
     
-    -- Calculate positions for the two new boxes
     local x1, y1, x2, y2
     
     local localSlicePoint
@@ -473,8 +721,8 @@ function sliceBox(box)
     newBox1.body:setAngularVelocity(originalAngularVel + love.math.random(-0.5, 0.5))
     newBox2.body:setAngularVelocity(originalAngularVel + love.math.random(-0.5, 0.5))
     
-    table.insert(box_i, newBox1)
-    table.insert(box_i, newBox2)
+    table.insert(boxes, newBox1)
+    table.insert(boxes, newBox2)
     
     for i = 1, 15 do
         createDamageEffect(x, y)
@@ -511,367 +759,12 @@ function drawDamageEffects()
 end
 
 -- ============================================================================
--- DUAL ROPE SYSTEM
--- ============================================================================
-
-function createRope(obj1, obj2)
-    if not obj1 or not obj2 or not obj1.body or not obj2.body then return nil end
-    if obj1.body:isDestroyed() or obj2.body:isDestroyed() then return nil end
-    
-    -- Target the nearest edge instead of the centers
-    local cx2, cy2 = obj2.body:getPosition()
-    local x1, y1 = getEdgePoint(obj1, cx2, cy2)
-    
-    local cx1, cy1 = obj1.body:getPosition()
-    local x2, y2 = getEdgePoint(obj2, cx1, cy1)
-    
-    local rope = { bodies = {}, joints = {}, obj1 = obj1, obj2 = obj2 }
-    local dx, dy = x2 - x1, y2 - y1
-    local distance = math.sqrt(dx*dx + dy*dy)
-    
-    local numSegments = 15
-    local angle = math.atan2(dy, dx)
-    
-    local segLength = distance / numSegments
-    local segThickness = 3 -- Visual thickness
-    
-    -- Unit direction vectors for moving along the rope line
-    local ux = dx / distance
-    local uy = dy / distance
-    
-    local prevBody = obj1.body
-    local prevX, prevY = x1, y1
-    
-    for i = 1, numSegments do
-        -- Position center point of the current rectangle link
-        local cx = x1 + ux * (segLength * (i - 0.5))
-        local cy = y1 + uy * (segLength * (i - 0.5))
-        
-        local segBody = love.physics.newBody(world, cx, cy, "dynamic")
-        segBody:setAngle(angle)
-        
-        local segShape = love.physics.newRectangleShape(segLength, segThickness)
-        local segFixture = love.physics.newFixture(segBody, segShape, 0.5)
-        segFixture:setSensor(true) -- Prevent clipping explosions
-        segFixture:setFriction(0.2)
-        
-        -- High damping eliminates sudden physics oscillations
-        segBody:setLinearDamping(6.0)
-        segBody:setAngularDamping(6.0)
-        
-        table.insert(rope.bodies, segBody)
-        
-        -- Revolute joint links the END of the previous body to the START of this link
-        table.insert(rope.joints, love.physics.newRevoluteJoint(prevBody, segBody, prevX, prevY, false))
-        
-        -- Advance the structural connection point to the END of this current rectangle link
-        prevBody = segBody
-        prevX = x1 + ux * (segLength * i)
-        prevY = y1 + uy * (segLength * i)
-    end
-    
-    -- Link the end edge of the last segment directly to the second target object boundary
-    table.insert(rope.joints, love.physics.newRevoluteJoint(prevBody, obj2.body, x2, y2, false))
-    
-    -- Backing limit rope constraint holds the sequence together tightly
-    rope.limitRope = love.physics.newRopeJoint(obj1.body, obj2.body, x1, y1, x2, y2, distance + 2, false)
-    
-    return rope
-end
-
-function connectTwoObjectsAndDetach()
-    local player = PlayerX[1]
-    if not player then return end
-    
-    if not player.rope1 or not player.rope2 then return end
-    
-    local rope1 = player.rope1
-    local rope2 = player.rope2
-    
-    local obj1 = rope1.object
-    local obj2 = rope2.object
-    
-    if not obj1 or not obj2 or not obj1.body or not obj2.body then return end
-    if obj1.body:isDestroyed() or obj2.body:isDestroyed() then return end
-    
-    -- Ensure tracking arrays are ready
-    obj1.ropes = obj1.ropes or {}
-    obj2.ropes = obj2.ropes or {}
-    
-    local jx, jy = player.body:getWorldPoint(0, player.h / 2)
-    
-    -- 1. Unbind the player anchors instantly
-    if rope1.joints[1] and not rope1.joints[1]:isDestroyed() then rope1.joints[1]:destroy() end
-    if rope2.joints[1] and not rope2.joints[1]:isDestroyed() then rope2.joints[1]:destroy() end
-    
-    -- 2. Fuse the two loose ends smoothly right where they met at the center
-    local linkJoint = love.physics.newRevoluteJoint(rope1.bodies[1], rope2.bodies[1], jx, jy, false)
-    
-    -- 3. Transition the overall structural limits safely
-    local len1 = (rope1.limitRope and not rope1.limitRope:isDestroyed()) and rope1.limitRope:getMaxLength() or 200
-    local len2 = (rope2.limitRope and not rope2.limitRope:isDestroyed()) and rope2.limitRope:getMaxLength() or 200
-    
-    if rope1.limitRope and not rope1.limitRope:isDestroyed() then rope1.limitRope:destroy() end
-    if rope2.limitRope and not rope2.limitRope:isDestroyed() then rope2.limitRope:destroy() end
-    
-    local x1, y1 = obj1.body:getPosition()
-    local x2, y2 = obj2.body:getPosition()
-    local limitRope = love.physics.newRopeJoint(obj1.body, obj2.body, x1, y1, x2, y2, len1 + len2, false)
-    
-    -- 4. Construct a perfect linear array map for drawing loops
-    local mergedRope = {
-        bodies = {},
-        joints = {},
-        obj1 = obj1,
-        obj2 = obj2,
-        limitRope = limitRope,
-        object = obj2
-    }
-    
-    -- TRICK: rope1 flowed from Player (1) out to Obj1 (#bodies). 
-    -- We load it sequentially from index 1 up to #bodies, making Obj1 the starting root point.
-    for i = 1, #rope1.bodies do
-        local b = rope1.bodies[i]
-        b:setLinearDamping(8.0) -- Stabilize independent cable physics weight
-        b:setAngularDamping(8.0)
-        table.insert(mergedRope.bodies, b)
-    end
-    
-    -- TRICK: rope2 flowed from Player (1) out to Obj2 (#bodies). 
-    -- We append rope2 by starting at its outer tip (#bodies) and tracing backwards down to (1).
-    -- This forms a perfect straight pipeline link: Obj1 -> Center Fusion -> Obj2.
-    for i = #rope2.bodies, 1, -1 do
-        local b = rope2.bodies[i]
-        b:setLinearDamping(8.0)
-        b:setAngularDamping(8.0)
-        table.insert(mergedRope.bodies, b)
-    end
-    
-    -- Keep inner joint elements bound together so removals/cleans behave safely
-    table.insert(mergedRope.joints, linkJoint)
-    for i = 2, #rope1.joints do table.insert(mergedRope.joints, rope1.joints[i]) end
-    for i = 2, #rope2.joints do table.insert(mergedRope.joints, rope2.joints[i]) end
-    
-    -- Store rope structures into object indexes so drawing functions draw it properly
-    obj1.rope = mergedRope
-    obj2.rope = mergedRope
-    table.insert(obj1.ropes, mergedRope)
-    table.insert(obj2.ropes, mergedRope)
-    
-    obj1.roped = true
-    obj2.roped = true
-    
-    -- Fully wipe references from player space
-    player.rope1 = nil
-    player.rope2 = nil
-    
-    for i = 1, 20 do createDamageEffect(jx, jy) end
-end
-
-function destroyRope(rope)
-    if not rope then return end
-    if rope.limitRope and not rope.limitRope:isDestroyed() then
-        rope.limitRope:destroy()
-    end
-    if rope.joints then
-        for _, joint in ipairs(rope.joints) do
-            if joint and not joint:isDestroyed() then joint:destroy() end
-        end
-    end
-    if rope.bodies then
-        for _, body in ipairs(rope.bodies) do
-            if body and not body:isDestroyed() then body:destroy() end
-        end
-    end
-    if rope.obj1 then rope.obj1.rope = nil; rope.obj1.roped = false end
-    if rope.obj2 then rope.obj2.rope = nil; rope.obj2.roped = false end
-end
-
--- ============================================================================
--- NEW HELPER FUNCTIONS
--- ============================================================================
-
--- Calculates the nearest edge intersection on a body towards a target point
-function getEdgePoint(obj, targetX, targetY)
-    if not obj or not obj.body then return targetX, targetY end
-    if obj.body:isDestroyed() then return targetX, targetY end
-    
-    local cx, cy = obj.body:getPosition()
-    local dx, dy = targetX - cx, targetY - cy
-    local dist = math.sqrt(dx*dx + dy*dy)
-    if dist == 0 then return cx, cy end
-    dx, dy = dx/dist, dy/dist
-
-    if obj.type == "ball" then
-        return cx + dx * obj.r, cy + dy * obj.r
-    elseif obj.type == "box" or obj.type == "enemy" or obj.type == "player" then
-        local angle = obj.body:getAngle()
-        local cosA, sinA = math.cos(-angle), math.sin(-angle)
-        
-        -- Convert direction to local object space
-        local ldx = dx * cosA - dy * sinA
-        local ldy = dx * sinA + dy * cosA
-        
-        local hw = (obj.w or 20) / 2
-        local hh = (obj.h or 20) / 2
-        
-        -- Ray intersection with bounding box
-        local tx = (ldx ~= 0) and math.abs(hw / ldx) or math.huge
-        local ty = (ldy ~= 0) and math.abs(hh / ldy) or math.huge
-        local t = math.min(tx, ty)
-        
-        local lx = ldx * t
-        local ly = ldy * t
-        
-        -- Convert back to world space
-        cosA, sinA = math.cos(angle), math.sin(angle)
-        return cx + (lx * cosA - ly * sinA), cy + (lx * sinA + ly * cosA)
-    end
-    
-    return cx, cy
-end
-
--- Safely removes a rope from the physics world and unbinds it from both objects
-function removeSpecificRope(rope)
-    if not rope then return end
-    if rope.limitRope and not rope.limitRope:isDestroyed() then rope.limitRope:destroy() end
-    for _, joint in ipairs(rope.joints) do
-        if joint and not joint:isDestroyed() then joint:destroy() end
-    end
-    for _, body in ipairs(rope.bodies) do
-        if body and not body:isDestroyed() then body:destroy() end
-    end
-    
-    -- Unbind from objects
-    if rope.obj1 and rope.obj1.ropes then
-        for i = #rope.obj1.ropes, 1, -1 do
-            if rope.obj1.ropes[i] == rope then table.remove(rope.obj1.ropes, i) end
-        end
-    end
-    if rope.obj2 and rope.obj2.ropes then
-        for i = #rope.obj2.ropes, 1, -1 do
-            if rope.obj2.ropes[i] == rope then table.remove(rope.obj2.ropes, i) end
-        end
-    end
-end
-
--- Unified drawing function for object ropes
-function drawRope(rope)
-    if not rope or not rope.bodies then return end
-    
-    love.graphics.setColor(0, 0, 0, 1) -- Matches the clean black line aesthetic of your objects
-    
-    for _, linkBody in ipairs(rope.bodies) do
-        if linkBody and not linkBody:isDestroyed() then
-            local fixtures = linkBody:getFixtures()
-            if fixtures[1] then
-                local shape = fixtures[1]:getShape()
-                if shape:getType() == "polygon" then
-                    love.graphics.polygon("fill", linkBody:getWorldPoints(shape:getPoints()))
-                end
-            end
-        end
-    end
-end
-
-function grabObject()
-    local player = PlayerX[1]
-    if not player or (player.rope1 and player.rope2) then return end
-    
-    local px, py = player.body:getWorldPoint(0, player.h / 2)
-    local closestObj, closestDist = nil, 200
-
-    for _, obj in ipairs(box_i) do
-        if (obj.type == "box" or obj.type == "ball") and obj.body and not obj.body:isDestroyed() then
-            if (player.rope1 and player.rope1.object == obj) or (player.rope2 and player.rope2.object == obj) then
-                goto continue
-            end
-            local ox, oy = obj.body:getPosition()
-            local dist = math.sqrt((px-ox)^2 + (py-oy)^2)
-            if dist < closestDist then
-                closestDist = dist
-                closestObj = obj
-            end
-        end
-        ::continue::
-    end
-
-    if closestObj then
-        local newRope = createRope(player, closestObj)
-        if newRope then
-            newRope.object = closestObj
-            if not player.rope1 then
-                player.rope1 = newRope
-            elseif not player.rope2 then
-                player.rope2 = newRope
-            end
-        end
-    end
-end
-
-function grabEnemy()
-    local player = PlayerX[1]
-    if not player or (player.rope1 and player.rope2) then return end
-    
-    local px, py = player.body:getWorldPoint(0, player.h / 2)
-    local closestEnemy, closestDist = nil, 200
-    
-    for _, enemy in ipairs(enemies) do
-        if enemy.body and not enemy.body:isDestroyed() then
-            if (player.rope1 and player.rope1.object == enemy) or (player.rope2 and player.rope2.object == enemy) then
-                goto continue
-            end
-            local ex, ey = enemy.body:getPosition()
-            local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
-            if dist < closestDist then
-                closestDist = dist
-                closestEnemy = enemy
-            end
-        end
-        ::continue::
-    end
-    
-    if closestEnemy then
-        local newRope = createRope(player, closestEnemy)
-        if newRope then
-            newRope.object = closestEnemy
-            if not player.rope1 then
-                player.rope1 = newRope
-            elseif not player.rope2 then
-                player.rope2 = newRope
-            end
-        end
-    end
-end
-
-function releaseSingleRope(entity, ropeNumber)
-    if not entity then return end
-    local rope = nil
-    if ropeNumber == 1 then
-        rope = entity.rope1
-        entity.rope1 = nil
-    elseif ropeNumber == 2 then
-        rope = entity.rope2
-        entity.rope2 = nil
-    end
-    removeSpecificRope(rope)
-end
-
-
-function releaseRope(entity)
-    if entity then
-        releaseSingleRope(entity, 1)
-        releaseSingleRope(entity, 2)
-    end
-end
-
--- ============================================================================
 -- SIMPLE ENEMY AI
 -- ============================================================================
 
 function createEnemies()
+    -- Add enemies here as needed
     -- table.insert(enemies, createEnemyObj(-8900, -520, 12.5, 25, 0))
-    -- table.insert(enemies, createEnemyObj(-8850, -550, 15, 20, 0))
 end
 
 function createEnemyObj(x, y, w, h, angle)
@@ -886,14 +779,13 @@ function createEnemyObj(x, y, w, h, angle)
     local enemy = {
         type = "enemy", body = body, shape = shape, fixture = fixture,
         w = w, h = h, particles = {},
-        ropes = {},
+        ropeIds = {},
         health = calcMaxHealth, maxHealth = calcMaxHealth,
         damageFlash = 0, thrusterCooldown = 0
     }
-    table.insert(box_i, enemy)
+    table.insert(boxes, enemy)
     return enemy
 end
-
 
 function updateEnemies(dt)
     if not PlayerX[1] or not PlayerX[1].body or PlayerX[1].body:isDestroyed() then return end
@@ -906,7 +798,6 @@ function updateEnemies(dt)
                 enemy.damageFlash = math.max(0, enemy.damageFlash - dt) 
             end
             
-            -- Update enemy particles with faster fade
             for i = #enemy.particles, 1, -1 do
                 local p = enemy.particles[i]
                 p.life = p.life - dt * 250
@@ -925,7 +816,6 @@ function updateSingleEnemy(enemy, playerX, playerY, dt)
     local ex, ey = body:getPosition()
     local dx, dy = playerX - ex, playerY - ey
     
-    -- Update thruster cooldown
     if enemy.thrusterCooldown then
         enemy.thrusterCooldown = math.max(0, enemy.thrusterCooldown - dt)
     else
@@ -939,7 +829,6 @@ function updateSingleEnemy(enemy, playerX, playerY, dt)
         body:applyForce(dx * scale * forceMag, dy * scale * forceMag)
     end
     
-    -- Create thruster particles for basic enemies
     local vx, vy = body:getLinearVelocity()
     local speed = math.sqrt(vx^2 + vy^2)
     if speed > 20 and enemy.thrusterCooldown <= 0 then
@@ -1005,12 +894,6 @@ function drawEnemies()
         love.graphics.setColor(1, 0, 0, 0.5)
         love.graphics.print("E", x - 4, y - 4)
         
-        if enemy.ropes then
-            for _, rope in ipairs(enemy.ropes) do
-                if rope.obj1 == enemy then drawRope(rope) end
-            end
-        end
-        
         for _, p in ipairs(enemy.particles) do
             local alpha = math.min(1, p.life / 30)
             love.graphics.setColor(1, 0.3, 0.3, alpha)
@@ -1020,19 +903,20 @@ function drawEnemies()
         ::continue::
     end
 end
+
 -- ============================================================================
 -- SCALED BOXES & BALLS
 -- ============================================================================
 
 function createBoxes()
-    table.insert(box_i, createBoxObj(-800, 570, 8, 80, 0, 2, 0.2, ""))
-    table.insert(box_i, createBoxObj(-840, 570, 8, 80, 0, 2, 0.2, ""))
-    table.insert(box_i, createBoxObj(-820, 300, 80, 30, 0, 0.6, 0.2, ""))
+    table.insert(boxes, createBoxObj(-800, 570, 8, 80, 0, 2, 0.2, ""))
+    table.insert(boxes, createBoxObj(-840, 570, 8, 80, 0, 2, 0.2, ""))
+    table.insert(boxes, createBoxObj(-820, 300, 80, 30, 0, 0.6, 0.2, ""))
     createBoxGrid(-1600, 800, 3, 3, 30, 30, 3, 0.1, 0.2)
-    table.insert(box_i, createBoxObj(-900, 400, 20, 20, 0, 1.5, 0.3, ""))
-    table.insert(box_i, createBoxObj(-750, 350, 15, 40, 0.5, 1.2, 0.2, ""))
-    table.insert(box_i, createBoxObj(-1000, 600, 25, 25, 0, 2.0, 0.1, ""))
-    table.insert(box_i, createBoxObj(-1100, 650, 12, 60, 0.3, 0.8, 0.4, ""))
+    table.insert(boxes, createBoxObj(-900, 400, 20, 20, 0, 1.5, 0.3, ""))
+    table.insert(boxes, createBoxObj(-750, 350, 15, 40, 0.5, 1.2, 0.2, ""))
+    table.insert(boxes, createBoxObj(-1000, 600, 25, 25, 0, 2.0, 0.1, ""))
+    table.insert(boxes, createBoxObj(-1100, 650, 12, 60, 0.3, 0.8, 0.4, ""))
 end
 
 function createBoxGrid(startX, startY, cols, rows, boxWidth, boxHeight, spacing, density, friction)
@@ -1040,7 +924,7 @@ function createBoxGrid(startX, startY, cols, rows, boxWidth, boxHeight, spacing,
         for col = 0, cols - 1 do
             local x = startX + (col * (boxWidth + spacing))
             local y = startY - (row * (boxHeight + spacing))
-            table.insert(box_i, createBoxObj(x, y, boxWidth, boxHeight, 0, density, friction, string.format("x%d%d", col, row)))
+            table.insert(boxes, createBoxObj(x, y, boxWidth, boxHeight, 0, density, friction, string.format("x%d%d", col, row)))
         end
     end
 end
@@ -1059,12 +943,12 @@ function createBoxObj(x, y, w, h, angle, density, friction, label)
         type = "box", body = body, shape = shape, fixture = fixture,
         w = w, h = h, label = label or "Box",
         health = calcMaxHealth, maxHealth = calcMaxHealth,
-        damageFlash = 0, ropes = {}, sliceDepth = 0
+        damageFlash = 0, ropeIds = {}, sliceDepth = 0
     }
 end
 
 function drawBoxes()
-    for _, box in ipairs(box_i) do
+    for _, box in ipairs(boxes) do
         if box.type == "box" and box.body and not box.body:isDestroyed() then
             if box.damageFlash and box.damageFlash > 0 then
                 love.graphics.setColor(0, 0, 0, math.sin(box.damageFlash * 30) * 0.5 + 0.5)
@@ -1074,13 +958,7 @@ function drawBoxes()
             
             local x, y = box.body:getPosition()
             love.graphics.polygon("fill", box.body:getWorldPoints(box.shape:getPoints()))
-            
-            if box.ropes then
-                for _, rope in ipairs(box.ropes) do
-                    -- Only draw from obj1's pass to prevent doubling up on visuals
-                    if rope.obj1 == box then drawRope(rope) end
-                end
-            end
+            -- REMOVED: rope drawing here
         end
     end
 end
@@ -1105,9 +983,9 @@ function createBallObj(x, y, r, angularVelocity, density, friction)
     local ball = {
         type = "ball", body = body, shape = shape, fixture = fixture,
         r = r, health = calcMaxHealth, maxHealth = calcMaxHealth, 
-        damageFlash = 0, ropes = {}
+        damageFlash = 0, ropeIds = {}
     }
-    table.insert(box_i, ball)
+    table.insert(boxes, ball)
     return ball
 end
 
@@ -1136,12 +1014,7 @@ function drawBalls()
             love.graphics.line(x - ball.r * cosA, y - ball.r * sinA, x + ball.r * cosA, y + ball.r * sinA)
             love.graphics.line(x - ball.r * sinA, y + ball.r * cosA, x + ball.r * sinA, y - ball.r * cosA)
             love.graphics.setLineWidth(1)
-            
-            if ball.ropes then
-                for _, rope in ipairs(ball.ropes) do
-                    if rope.obj1 == ball then drawRope(rope) end
-                end
-            end
+            -- REMOVED: rope drawing here
         end
     end
 end
@@ -1160,7 +1033,7 @@ function createPlayer()
     PlayerX[1] = {
         body = body, shape = shape, fixture = fixture,
         w = 12.5, h = 25, particles = {}, 
-        rope1 = nil, rope2 = nil, -- Dual ropes
+        ropeIds = {},
         health = 200, maxHealth = 200, damageFlash = 0,
         thrusterCooldown = 0
     }
@@ -1281,65 +1154,13 @@ function drawPlayer(player)
     
     love.graphics.setColor(0, 0, 0)
     love.graphics.polygon("fill", player.body:getWorldPoints(player.shape:getPoints()))
-    
-    -- Draw rope 1
-    if player.rope1 then
-        love.graphics.setLineWidth(2)
-        if game.debugMode then
-            love.graphics.setColor(0.3, 1, 0.3, 0.8)
-        else
-            love.graphics.setColor(0, 0, 0, 1)
-        end
-        local prevX, prevY = player.body:getWorldPoint(0, player.h / 2)
-        for _, linkBody in ipairs(player.rope1.bodies) do
-            if linkBody and not linkBody:isDestroyed() then
-                local lx, ly = linkBody:getPosition()
-                love.graphics.line(prevX, prevY, lx, ly)
-                prevX, prevY = lx, ly
-            end
-        end
-        if player.rope1.joints and #player.rope1.joints > 0 then
-            local lastJoint = player.rope1.joints[#player.rope1.joints]
-            if lastJoint and not lastJoint:isDestroyed() then
-                local ax, ay = lastJoint:getAnchors()
-                love.graphics.line(prevX, prevY, ax, ay)
-            end
-        end
-    end
-    
-    -- Draw rope 2
-    if player.rope2 then
-        love.graphics.setLineWidth(2)
-        if game.debugMode then
-            love.graphics.setColor(0.3, 0.3, 1, 0.8)
-        else
-            love.graphics.setColor(0, 0, 0, 1)
-        end
-        local prevX, prevY = player.body:getWorldPoint(0, player.h / 2)
-        for _, linkBody in ipairs(player.rope2.bodies) do
-            if linkBody and not linkBody:isDestroyed() then
-                local lx, ly = linkBody:getPosition()
-                love.graphics.line(prevX, prevY, lx, ly)
-                prevX, prevY = lx, ly
-            end
-        end
-        if player.rope2.joints and #player.rope2.joints > 0 then
-            local lastJoint = player.rope2.joints[#player.rope2.joints]
-            if lastJoint and not lastJoint:isDestroyed() then
-                local ax, ay = lastJoint:getAnchors()
-                love.graphics.line(prevX, prevY, ax, ay)
-            end
-        end
-    end
-    
-    love.graphics.setLineWidth(1)
+    love.graphics.setColor(0, 1, 0, 0.5)
+    love.graphics.print("$", x - 4, y - 4)
     
     for _, p in ipairs(player.particles) do
         love.graphics.setColor(1, 1, 1, p.life/255)
         love.graphics.circle("fill", p.x, p.y, 1.5)
     end
-    love.graphics.setColor(0, 1, 0, 0.5)
-    love.graphics.print("$", x - 4, y - 4)
 end
 
 function createPlayerParticle(x, y)
@@ -1419,15 +1240,9 @@ function drawParticles()
         local alpha = math.min(1, p.life / 50)
         
         if p.type == "thruster" then
-            local r = 1
-            local g = 0.5 + (p.life / 100) * 0.5
-            local b = 0
-            love.graphics.setColor(r, g, b, alpha * 0.8)
+            love.graphics.setColor(1, 0.5 + (p.life / 100) * 0.5, 0, alpha * 0.8)
         elseif p.type == "enemy_thruster" then
-            local r = 1
-            local g = 0.2 + (p.life / 100) * 0.3
-            local b = 0
-            love.graphics.setColor(r, g, b, alpha * 0.7)
+            love.graphics.setColor(1, 0.2 + (p.life / 100) * 0.3, 0, alpha * 0.7)
         else
             love.graphics.setColor(1, 1, 1, alpha)
         end
@@ -1437,5 +1252,124 @@ function drawParticles()
             size = size * p.scale
         end
         love.graphics.circle("fill", p.x, p.y, math.max(0.5, size))
+    end
+end
+
+-- ============================================================================
+-- UI AND DEBUG FUNCTIONS
+-- ============================================================================
+
+function drawUI()
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("State: " .. game.state, 10, 10)
+    
+    if PlayerX[1] then
+        local px, py = PlayerX[1].body:getPosition()
+        love.graphics.print("Player Position: " .. math.floor(px) .. ", " .. math.floor(py), 10, 30)
+        
+        local ropeCount = #(PlayerX[1].ropeIds or {})
+        love.graphics.print("Ropes attached: " .. ropeCount .. "/2", 10, 250)
+        if ropeCount == 0 then
+            love.graphics.print("No ropes attached", 10, 270)
+        elseif ropeCount == 1 then
+            love.graphics.setColor(0.3, 1, 0.3)
+            love.graphics.print("1 rope attached (Press E or SPACE for second)", 10, 270)
+        else
+            love.graphics.setColor(0.3, 1, 0.3)
+            love.graphics.print("Both ropes attached! Press SHIFT to connect them", 10, 270)
+        end
+        love.graphics.setColor(1, 1, 1)
+    end
+    
+    love.graphics.print("Camera Mode: " .. camera.mode, 10, 50)
+    love.graphics.print("Zoom: " .. string.format("%.2f", camera.scale), 10, 70)
+    
+    if game.debugMode then
+        love.graphics.setColor(1, 0, 0)
+        love.graphics.print("DEBUG MODE ACTIVE", 10, 90)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.print("Total ropes: " .. #ropes, 10, 110)
+    end
+    
+    love.graphics.print("Controls:", love.graphics.getWidth() - 200, 10)
+    for i, instruction in ipairs(cameraInstructions) do
+        love.graphics.print(instruction, love.graphics.getWidth() - 200, 10 + i * 20)
+    end
+    
+    love.graphics.print("Game Controls:", love.graphics.getWidth() - 200, 210)
+    love.graphics.print("Arrow Keys: Move Player", love.graphics.getWidth() - 200, 230)
+    love.graphics.print("PageUp/Down: Rotate", love.graphics.getWidth() - 200, 250)
+    love.graphics.print("P: Pause/Resume", love.graphics.getWidth() - 200, 270)
+end
+
+function drawDebugInfo()
+    if PlayerX[1] then drawPlayerDebugInfo(PlayerX[1]) end
+    for _, enemy in ipairs(enemies) do drawEnemyDebugInfo(enemy) end
+    if debugInfo.showPhysicsInfo then drawPhysicsDebug() end
+end
+
+function drawPlayerDebugInfo(player)
+    local body = player.body
+    local x, y = body:getPosition()
+    local angle = body:getAngle()
+    
+    if debugInfo.showPlayerVectors then
+        local length = 50
+        love.graphics.setColor(1, 0, 0, 0.8)
+        love.graphics.line(x, y, x + math.cos(angle) * length, y + math.sin(angle) * length)
+        love.graphics.setColor(0, 1, 0, 0.8)
+        love.graphics.line(x, y, x + math.cos(angle + math.pi/2) * length, y + math.sin(angle + math.pi/2) * length)
+    end
+    
+    local vx, vy = body:getLinearVelocity()
+    love.graphics.setColor(0, 0.5, 1, 0.8)
+    love.graphics.line(x, y, x + vx, y + vy)
+end
+
+function drawEnemyDebugInfo(enemy)
+    local body = enemy.body
+    local x, y = body:getPosition()
+    if PlayerX[1] then
+        local px, py = PlayerX[1].body:getPosition()
+        love.graphics.setColor(1, 0, 0, 0.5)
+        love.graphics.line(x, y, px, py)
+    end
+    local vx, vy = body:getLinearVelocity()
+    love.graphics.setColor(1, 0.5, 0.5, 0.8)
+    love.graphics.line(x, y, x + vx, y + vy)
+end
+
+function drawPhysicsDebug()
+    love.graphics.setColor(0, 0.5, 0, 0.3)
+    for _, boundary in ipairs(boundaries) do
+        love.graphics.polygon("line", boundary.body:getWorldPoints(boundary.shape:getPoints()))
+    end
+    love.graphics.setColor(0.5, 0.5, 0, 0.3)
+    for _, box in ipairs(boxes) do
+        if box.type == "box" then
+            love.graphics.polygon("line", box.body:getWorldPoints(box.shape:getPoints()))
+        end
+    end
+end
+
+function updateCamera(dt)
+    if camera.mode == "follow_player" and PlayerX[1] then
+        local targetX, targetY = PlayerX[1].body:getPosition()
+        camera.x = camera.x + (targetX - camera.x) * 0.99
+        camera.y = camera.y + (targetY - camera.y) * 0.99
+    elseif camera.mode == "follow_enemy" then
+        local enemy = enemies[1]
+        if enemy and enemy.body and not enemy.body:isDestroyed() then
+            camera.target = enemy
+            local targetX, targetY = enemy.body:getPosition()
+            camera.x = camera.x + (targetX - camera.x) * 0.99
+            camera.y = camera.y + (targetY - camera.y) * 0.99
+        end
+    elseif camera.mode == "free_move" then
+        local speed = camera.freeMoveSpeed * dt / camera.scale
+        if love.keyboard.isDown("w") or love.keyboard.isDown("up") then camera.y = camera.y - speed end
+        if love.keyboard.isDown("s") or love.keyboard.isDown("down") then camera.y = camera.y + speed end
+        if love.keyboard.isDown("a") or love.keyboard.isDown("left") then camera.x = camera.x - speed end
+        if love.keyboard.isDown("d") or love.keyboard.isDown("right") then camera.x = camera.x + speed end
     end
 end
