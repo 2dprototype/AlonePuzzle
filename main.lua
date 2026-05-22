@@ -1,4 +1,10 @@
 function love.load()
+    -- Game state
+    game = {
+        debugMode = false,
+        state = "playing" -- playing, paused, gameover
+    }
+    
     -- Physics world setup
     love.physics.setMeter(64) -- 1 meter = 64 pixels
     world = love.physics.newWorld(0, 9.81 * 64, true)
@@ -8,6 +14,8 @@ function love.load()
     PlayerX = {}
     box_i = {}
     particles = {}
+    enemies = {}
+    balls = {}
     
     createBoundaries()
     createPlayer()
@@ -34,11 +42,23 @@ function love.load()
         "F3: Free Move",
         "Wheel or -/+: Zoom",
         "WASD: Free Move",
-        "R: Reset Zoom"
+        "R: Reset Zoom",
+        "F5: Toggle Debug Mode",
+        "SPACE: Grab/Release Box"
+    }
+    
+    -- Debug info
+    debugInfo = {
+        showPlayerVectors = true,
+        showThrusterDirection = true,
+        showPhysicsInfo = true,
+        showObjectCounts = true
     }
 end
 
 function love.update(dt)
+    if game.state ~= "playing" then return end
+    
     world:update(dt)
     updatePlayer(dt)
     updateEnemies(dt)
@@ -56,32 +76,33 @@ function love.draw()
     love.graphics.translate(-camera.x, -camera.y)
     
     -- Draw sun
-    love.graphics.setColor(1, 0.97, 0.45) -- #fff873
     love.graphics.circle("fill", 0, 0, 12.5)
     
+    local oldFont = love.graphics.getFont()
+    local smallFont = love.graphics.newFont(8)
+    love.graphics.setFont(smallFont)
+
     -- Draw all objects
-    for _, boundary in ipairs(boundaries) do
-        drawBoundary(boundary)
-    end
-    
-    for _, box in ipairs(box_i) do
-        if box.type == "box" then
-            drawBox(box)
-        elseif box.type == "enemy" then
-            drawEnemy(box)
-        elseif box.type == "ball" then
-            drawBall(box)
-        end
-    end
-    
+    drawBoundaries()
+    drawBoxes()
+    drawEnemies()
+    drawBalls()
     drawPlayer(PlayerX[1])
     drawParticles()
+    
+    love.graphics.setFont(oldFont)
+    
+    -- Debug drawings (on top of everything)
+    if game.debugMode then
+        drawDebugInfo()
+    end
     
     love.graphics.pop()
     
     -- Draw UI (not affected by camera)
     drawUI()
 end
+
 
 function love.keypressed(key)
     if key == "escape" then
@@ -101,6 +122,22 @@ function love.keypressed(key)
         camera.scale = math.max(camera.scale - 0.1, 0.1)
     elseif key == "r" then
         camera.scale = 1.0  -- Reset zoom
+    elseif key == "f5" then
+        game.debugMode = not game.debugMode
+    elseif key == "p" then
+        if game.state == "playing" then
+            game.state = "paused"
+        else
+            game.state = "playing"
+        end
+    elseif key == "space" then
+        if PlayerX[1] then
+            if PlayerX[1].rope then
+                releaseBox()
+            else
+                grabBox()
+            end
+        end
     end
 end
 
@@ -116,35 +153,185 @@ function love.wheelmoved(x, y)
     end
 end
 
+
 function drawUI()
     love.graphics.setColor(1, 1, 1)
+    
+    -- Game state
+    love.graphics.print("State: " .. game.state, 10, 10)
     
     -- Player position
     if PlayerX[1] then
         local px, py = PlayerX[1].body:getPosition()
-        love.graphics.print("x: " .. math.floor(px), 10, 10)
-        love.graphics.print("y: " .. math.floor(py), 10, 30)
+        love.graphics.print("Player Position: " .. math.floor(px) .. ", " .. math.floor(py), 10, 30)
+        if PlayerX[1].rope then
+            love.graphics.setColor(0.3, 1, 0.3)
+            love.graphics.print("Carrying Box!", 10, 250)
+            love.graphics.setColor(1, 1, 1)
+        end
     end
     
     -- Camera info
-    love.graphics.print("Camera Mode: " .. camera.mode, 10, 60)
-    love.graphics.print("Zoom: " .. string.format("%.2f", camera.scale), 10, 80)
+    love.graphics.print("Camera Mode: " .. camera.mode, 10, 50)
+    love.graphics.print("Zoom: " .. string.format("%.2f", camera.scale), 10, 70)
+    
+    -- Debug mode indicator
+    if game.debugMode then
+        love.graphics.setColor(1, 0, 0)
+        love.graphics.print("DEBUG MODE ACTIVE", 10, 90)
+        love.graphics.setColor(1, 1, 1)
+    end
     
     -- Instructions
-    love.graphics.print("Camera Controls:", love.graphics.getWidth() - 200, 10)
+    love.graphics.print("Controls:", love.graphics.getWidth() - 200, 10)
     for i, instruction in ipairs(cameraInstructions) do
-        love.graphics.print(instruction, love.graphics.getWidth() - 200, 30 + i * 20)
+        love.graphics.print(instruction, love.graphics.getWidth() - 200, 10 + i * 20)
     end
+    
+    -- Game controls
+    love.graphics.print("Game Controls:", love.graphics.getWidth() - 200, 190)
+    love.graphics.print("Arrow Keys: Move Player", love.graphics.getWidth() - 200, 210)
+    love.graphics.print("PageUp/Down: Rotate", love.graphics.getWidth() - 200, 230)
+    love.graphics.print("P: Pause/Resume", love.graphics.getWidth() - 200, 250)
     
     -- Target info if following enemy
     if camera.mode == "follow_enemy" and camera.target then
         local tx, ty = camera.target.body:getPosition()
-        love.graphics.print("Tracking Enemy", 10, 100)
-        love.graphics.print("Enemy Position: " .. math.floor(tx) .. ", " .. math.floor(ty), 10, 120)
+        love.graphics.print("Tracking Enemy", 10, 110)
+        love.graphics.print("Enemy Position: " .. math.floor(tx) .. ", " .. math.floor(ty), 10, 130)
+    end
+    
+    -- Object counts in debug mode
+    if game.debugMode then
+        love.graphics.print("Objects - Boundaries: " .. #boundaries .. 
+                           " Boxes: " .. countObjects("box") .. 
+                           " Enemies: " .. #enemies .. 
+                           " Balls: " .. #balls, 10, 150)
     end
 end
 
--- Enhanced Camera system
+
+
+function drawDebugInfo()
+    if PlayerX[1] then
+        drawPlayerDebugInfo(PlayerX[1])
+    end
+    
+    for _, enemy in ipairs(enemies) do
+        drawEnemyDebugInfo(enemy)
+    end
+    
+    -- Draw physics body outlines
+    if debugInfo.showPhysicsInfo then
+        drawPhysicsDebug()
+    end
+end
+
+function drawPlayerDebugInfo(player)
+    local body = player.body
+    local x, y = body:getPosition()
+    local angle = body:getAngle()
+    
+    -- Coordinate axes
+    if debugInfo.showPlayerVectors then
+        local length = 50
+        -- X-axis (red)
+        love.graphics.setColor(1, 0, 0, 0.8)
+        love.graphics.line(x, y, x + math.cos(angle) * length, y + math.sin(angle) * length)
+        -- Y-axis (green)
+        love.graphics.setColor(0, 1, 0, 0.8)
+        love.graphics.line(x, y, x + math.cos(angle + math.pi/2) * length, y + math.sin(angle + math.pi/2) * length)
+    end
+    
+    -- Velocity vector
+    local vx, vy = body:getLinearVelocity()
+    love.graphics.setColor(0, 0.5, 1, 0.8)
+    love.graphics.line(x, y, x + vx, y + vy)
+    love.graphics.print("Velocity: " .. string.format("%.1f", math.sqrt(vx*vx + vy*vy)), x + 20, y - 40)
+    
+    -- Thruster direction
+    if debugInfo.showThrusterDirection then
+        local thrusterLength = 50
+        local bx, by = body:getWorldPoint(0, player.h / 2) -- Bottom point
+        
+        -- Up thruster (cyan)
+        if love.keyboard.isDown("up") then
+            love.graphics.setColor(0, 1, 1, 0.8)
+            love.graphics.line(bx, by, bx, by - thrusterLength)
+        end
+        
+        -- Down thruster (yellow)
+        if love.keyboard.isDown("down") then
+            love.graphics.setColor(1, 1, 0, 0.8)
+            love.graphics.line(bx, by, bx, by + thrusterLength)
+        end
+    end
+    
+    -- Angular velocity
+    local av = body:getAngularVelocity()
+    love.graphics.setColor(1, 0.5, 0, 0.8)
+    love.graphics.print("Angular Vel: " .. string.format("%.2f", av), x + 20, y - 20)
+    
+    -- Force indicators
+    love.graphics.setColor(1, 0, 1, 0.6)
+    if love.keyboard.isDown("right") then
+        love.graphics.line(x, y, x + 20, y)
+    end
+    if love.keyboard.isDown("left") then
+        love.graphics.line(x, y, x - 20, y)
+    end
+end
+
+function drawEnemyDebugInfo(enemy)
+    local body = enemy.body
+    local x, y = body:getPosition()
+    
+    -- Draw line to player if exists
+    if PlayerX[1] then
+        local px, py = PlayerX[1].body:getPosition()
+        love.graphics.setColor(1, 0, 0, 0.5)
+        love.graphics.line(x, y, px, py)
+        
+        -- Distance to player
+        local dx, dy = px - x, py - y
+        local distance = math.sqrt(dx*dx + dy*dy)
+        love.graphics.print("Dist: " .. string.format("%.1f", distance), x + 15, y - 20)
+    end
+    
+    -- Velocity vector
+    local vx, vy = body:getLinearVelocity()
+    love.graphics.setColor(1, 0.5, 0.5, 0.8)
+    love.graphics.line(x, y, x + vx, y + vy)
+end
+
+function drawPhysicsDebug()
+    -- Draw boundaries
+    love.graphics.setColor(0, 0.5, 0, 0.3)
+    for _, boundary in ipairs(boundaries) do
+        love.graphics.polygon("line", boundary.body:getWorldPoints(boundary.shape:getPoints()))
+    end
+    
+    -- Draw boxes
+    love.graphics.setColor(0.5, 0.5, 0, 0.3)
+    for _, box in ipairs(box_i) do
+        if box.type == "box" then
+            love.graphics.polygon("line", box.body:getWorldPoints(box.shape:getPoints()))
+        end
+    end
+end
+
+function countObjects(objectType)
+    local count = 0
+    for _, obj in ipairs(box_i) do
+        if obj.type == objectType then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+
+
 function updateCamera(dt)
     if camera.mode == "follow_player" and PlayerX[1] then
         -- Smooth follow player
@@ -187,38 +374,13 @@ function updateCamera(dt)
 end
 
 function findFirstEnemy()
-    for _, obj in ipairs(box_i) do
-        if obj.type == "enemy" then
-            return obj
-        end
+    for _, enemy in ipairs(enemies) do
+        return enemy
     end
     return nil
 end
 
--- -- Boundary creation and drawing
--- function createBoundaries()
-    -- -- Floor
-    -- table.insert(boundaries, createBoundary(320, 500, 600, 10, 0))
-    -- table.insert(boundaries, createBoundary(-100, 350, 600, 10, 0.3))
-    -- table.insert(boundaries, createBoundary(-485, 261, 200, 10, 0))
-    -- table.insert(boundaries, createBoundary(-265, 589, 600, 10, -0.3))
-    
-    -- -- Additional platforms
-    -- table.insert(boundaries, createBoundary(-700, 605, 300, 10, 0))
-    -- table.insert(boundaries, createBoundary(-700, 678, 300, 10, 0))
-    -- table.insert(boundaries, createBoundary(-1260, 820, 300, 10, 0))
-    -- table.insert(boundaries, createBoundary(-1540, 825, 180, 10, 0))
-    -- table.insert(boundaries, createBoundary(-1565, 1005, 250, 10, 0))
-    -- table.insert(boundaries, createBoundary(-1300, 1005, 250, 10, 0))
-    -- table.insert(boundaries, createBoundary(-1685, 905, 10, 200, 0))
-    -- table.insert(boundaries, createBoundary(-980, 749, 300, 10, -0.5))
-    -- table.insert(boundaries, createBoundary(-440, 620, 80, 5, 0.4))
-    
-    -- -- Box boundaries
-    -- table.insert(box_i, createBoxObj(-800, 570, 5, 60, 0, 2, 0.2))
-    -- table.insert(box_i, createBoxObj(-840, 570, 5, 60, 0, 2, 0.2))
-    -- table.insert(box_i, createBoxObj(-820, 300, 65, 25, 0, 0.6, 0.2))
--- end
+
 
 function createBoundaries()
     -- Floor
@@ -237,71 +399,6 @@ function createBoundaries()
     table.insert(boundaries, createBoundary(-1685, 905, 10, 200, 0))
     table.insert(boundaries, createBoundary(-980, 749, 300, 10, -0.5))
     table.insert(boundaries, createBoundary(-440, 620, 80, 5, 0.4))
-    
-    -- Box boundaries - Made larger and more
-    table.insert(box_i, createBoxObj(-800, 570, 8, 80, 0, 2, 0.2))
-    table.insert(box_i, createBoxObj(-840, 570, 8, 80, 0, 2, 0.2))
-    table.insert(box_i, createBoxObj(-820, 300, 80, 30, 0, 0.6, 0.2))
-    
-
-    -- Platform boxes
-    table.insert(box_i, createBoxObj(-600, 400, 60, 20, 0, 1.0, 0.3))
-    table.insert(box_i, createBoxObj(-500, 380, 40, 25, 0.2, 1.2, 0.4))
-    table.insert(box_i, createBoxObj(-400, 350, 70, 15, -0.1, 0.8, 0.2))
-    
-    -- Tower of boxes
-    table.insert(box_i, createBoxObj(-1100, 600, 25, 25, 0, 1.0, 0.3))
-    table.insert(box_i, createBoxObj(-1100, 570, 25, 25, 0, 1.0, 0.3))
-    table.insert(box_i, createBoxObj(-1100, 540, 25, 25, 0, 1.0, 0.3))
-    table.insert(box_i, createBoxObj(-1100, 510, 25, 25, 0, 1.0, 0.3))
-    
--- Stacked boxes
-    table.insert(box_i, createBoxObj(-1200, 650, 30, 30, 0, 1.5, 0.5))
-    table.insert(box_i, createBoxObj(-1170, 650, 30, 30, 0, 1.5, 0.5))
-    table.insert(box_i, createBoxObj(-1200, 620, 30, 30, 0, 1.5, 0.5))
-    table.insert(box_i, createBoxObj(-1170, 620, 30, 30, 0, 1.5, 0.5))
-    
-    -- Large platform boxes
-    table.insert(box_i, createBoxObj(-300, 500, 100, 20, 0, 2.0, 0.6))
-    table.insert(box_i, createBoxObj(-150, 550, 80, 25, 0.3, 1.8, 0.4))
-    
-    -- Bridge boxes
-    table.insert(box_i, createBoxObj(-900, 750, 20, 15, 0, 0.8, 0.2))
-    table.insert(box_i, createBoxObj(-880, 750, 20, 15, 0, 0.8, 0.2))
-    table.insert(box_i, createBoxObj(-860, 750, 20, 15, 0, 0.8, 0.2))
-    table.insert(box_i, createBoxObj(-840, 750, 20, 15, 0, 0.8, 0.2))
-    table.insert(box_i, createBoxObj(-820, 750, 20, 15, 0, 0.8, 0.2))
-    
-    -- Pyramid of boxes
-    table.insert(box_i, createBoxObj(-1300, 900, 40, 40, 0, 1.2, 0.4))
-    table.insert(box_i, createBoxObj(-1270, 860, 30, 30, 0, 1.2, 0.4))
-    table.insert(box_i, createBoxObj(-1330, 860, 30, 30, 0, 1.2, 0.4))
-    table.insert(box_i, createBoxObj(-1300, 820, 20, 20, 0, 1.2, 0.4))
-    
-    -- Floating boxes
-    table.insert(box_i, createBoxObj(-200, 250, 25, 25, 0, 0.7, 0.3))
-    table.insert(box_i, createBoxObj(-170, 280, 25, 25, 0.5, 0.7, 0.3))
-    table.insert(box_i, createBoxObj(-230, 270, 25, 25, -0.3, 0.7, 0.3))
-    
-    -- Large obstacle boxes
-    table.insert(box_i, createBoxObj(-1600, 950, 50, 50, 0, 3.0, 0.8))
-    table.insert(box_i, createBoxObj(-1550, 950, 50, 50, 0, 3.0, 0.8))
-    table.insert(box_i, createBoxObj(-1500, 950, 50, 50, 0, 3.0, 0.8))
-    
-    -- Small scattered boxes
-    table.insert(box_i, createBoxObj(-100, 600, 15, 15, 0, 0.5, 0.2))
-    table.insert(box_i, createBoxObj(-130, 620, 15, 15, 0.2, 0.5, 0.2))
-    table.insert(box_i, createBoxObj(-70, 590, 15, 15, -0.1, 0.5, 0.2))
-    table.insert(box_i, createBoxObj(-1400, 800, 20, 20, 0, 0.6, 0.3))
-    table.insert(box_i, createBoxObj(-1420, 780, 20, 20, 0.3, 0.6, 0.3))
-    
-    -- Tall thin boxes
-    table.insert(box_i, createBoxObj(-1350, 600, 10, 60, 0, 1.0, 0.4))
-    table.insert(box_i, createBoxObj(-1370, 600, 10, 60, 0, 1.0, 0.4))
-    
-    -- Wide flat boxes
-    table.insert(box_i, createBoxObj(-500, 650, 80, 12, 0, 1.5, 0.3))
-    table.insert(box_i, createBoxObj(-650, 700, 60, 10, 0, 1.3, 0.2))
 end
 
 function createBoundary(x, y, w, h, angle)
@@ -321,21 +418,20 @@ function createBoundary(x, y, w, h, angle)
     }
 end
 
-function drawBoundary(boundary)
+function drawBoundaries()
     love.graphics.setColor(0, 0, 0)
-    local x, y = boundary.body:getPosition()
-    love.graphics.polygon("fill", boundary.body:getWorldPoints(boundary.shape:getPoints()))
+    for _, boundary in ipairs(boundaries) do
+        love.graphics.polygon("fill", boundary.body:getWorldPoints(boundary.shape:getPoints()))
+    end
 end
 
--- Player creation and controls
+
 function createPlayer()
-    -- local body = love.physics.newBody(world, -1590, 800, "dynamic")
     local body = love.physics.newBody(world, -820, 0, "dynamic")
     local shape = love.physics.newRectangleShape(12.5, 25)
     local fixture = love.physics.newFixture(body, shape, 1.0)
     fixture:setFriction(0.1)
     fixture:setRestitution(0.2)
-    -- body:setFixedRotation(true)
     
     PlayerX[1] = {
         body = body,
@@ -343,7 +439,8 @@ function createPlayer()
         fixture = fixture,
         w = 12.5,
         h = 25,
-        particles = {}
+        particles = {},
+        rope = nil
     }
 end
 
@@ -368,13 +465,11 @@ function updatePlayer(dt)
     
     if love.keyboard.isDown("up") then
         body:applyForce(0, -60)
-        -- Emit particle at bottom of player (follows rotation)
         createPlayerParticle(bx, by)
     end 
-	
-	if love.keyboard.isDown("down") then
+    
+    if love.keyboard.isDown("down") then
         body:applyForce(0, 20)
-        -- Emit particle at bottom of player (follows rotation)
         createPlayerParticle(bx, by)
     end
 
@@ -387,17 +482,21 @@ function updatePlayer(dt)
 
     local torque = -angle * k - angularVelocity * damping
     body:applyTorque(torque)
-	
-	--Manual rotation
-	local rotationForce = 45
-	if love.keyboard.isDown("pageup") then
-		body:applyTorque(-rotationForce)
-	end
-	if love.keyboard.isDown("pagedown") then
-		body:applyTorque(rotationForce)
-	end
+    
+    -- Manual rotation
+    local rotationForce = 45
+    if love.keyboard.isDown("pageup") then
+        body:applyTorque(-rotationForce)
+    end
+    if love.keyboard.isDown("pagedown") then
+        body:applyTorque(rotationForce)
+    end
 
     -- Update particles
+    updatePlayerParticles(player, dt)
+end
+
+function updatePlayerParticles(player, dt)
     for i = #player.particles, 1, -1 do
         local p = player.particles[i]
         p.life = p.life - 8 * dt
@@ -422,16 +521,43 @@ function drawPlayer(player)
     love.graphics.setColor(0, 0, 0)
     love.graphics.polygon("fill", player.body:getWorldPoints(player.shape:getPoints()))
     
+    -- Draw dynamic rope links if carrying a box
+    if player.rope then
+        love.graphics.setColor(0, 0, 0)
+        love.graphics.setLineWidth(1)
+        local prevX, prevY = player.body:getWorldPoint(0, player.h / 2)
+        
+        for _, linkBody in ipairs(player.rope.bodies) do
+            local lx, ly = linkBody:getPosition()
+            love.graphics.line(prevX, prevY, lx, ly)
+            prevX, prevY = lx, ly
+        end
+        
+        -- Pull the connection all the way to the box joint target anchor point
+        if player.rope.joints[#player.rope.joints] then
+            local finalJoint = player.rope.joints[#player.rope.joints]
+            if not finalJoint:isDestroyed() then
+                local ax, ay = finalJoint:getAnchors()
+                love.graphics.line(prevX, prevY, ax, ay)
+            end
+        end
+        love.graphics.setLineWidth(1)
+    end
+    
     -- Draw particles
+    drawPlayerParticles(player)
+    
+    -- Draw player indicator
+    love.graphics.setColor(0, 1, 0, 0.5)
+    love.graphics.print("$", x - 4, y - 4)
+end
+
+function drawPlayerParticles(player)
     love.graphics.setColor(0.5, 0.5, 0.5)
     for _, p in ipairs(player.particles) do
         love.graphics.setColor(1, 1, 1, p.life/255)
         love.graphics.circle("fill", p.x, p.y, 1)
     end
-    
-    -- Draw player indicator
-    love.graphics.setColor(0, 1, 0, 0.5)
-    love.graphics.print("$", x - 4, y - 4)
 end
 
 function createPlayerParticle(x, y)
@@ -444,10 +570,121 @@ function createPlayerParticle(x, y)
     })
 end
 
--- Enemy creation and behavior
+
+-- ============================================================================
+-- ROPE / BOX CARRY MECHANICS
+-- ============================================================================
+
+function grabBox()
+    local player = PlayerX[1]
+    if not player then return end
+
+    local p_bottom_x, p_bottom_y = player.body:getWorldPoint(0, player.h / 2)
+    local grabRadius = 160 -- Maximum radius to tether boxes (in pixels)
+    
+    local closestBox = nil
+    local closestDist = grabRadius
+    local targetEdgeX, targetEdgeY = 0, 0
+
+    for _, obj in ipairs(box_i) do
+        if obj.type == "box" then
+            -- Check centers of all 4 outer edges of the box
+            local edges = {
+                {obj.body:getWorldPoint(0, -obj.h / 2)}, -- Top Center
+                {obj.body:getWorldPoint(0, obj.h / 2)},  -- Bottom Center
+                {obj.body:getWorldPoint(-obj.w / 2, 0)}, -- Left Center
+                {obj.body:getWorldPoint(obj.w / 2, 0)}   -- Right Center
+            }
+
+            for _, edge in ipairs(edges) do
+                local ex, ey = edge[1], edge[2]
+                local dx = p_bottom_x - ex
+                local dy = p_bottom_y - ey
+                local dist = math.sqrt(dx * dx + dy * dy)
+
+                if dist < closestDist then
+                    closestDist = dist
+                    closestBox = obj
+                    targetEdgeX, targetEdgeY = ex, ey
+                end
+            end
+        end
+    end
+
+    -- Construct the chain tether if a valid box is nearby
+    if closestBox then
+        player.rope = { bodies = {}, joints = {}, box = closestBox, limitRope = nil }
+        
+        -- Optimized settings for a much tighter chain
+        local numSegments = 10
+        local prevBody = player.body
+        local vx = targetEdgeX - p_bottom_x
+        local vy = targetEdgeY - p_bottom_y
+        local initialDistance = math.sqrt(vx * vx + vy * vy)
+
+        for i = 1, numSegments do
+            local t = i / (numSegments + 1)
+            local segX = p_bottom_x + vx * t
+            local segY = p_bottom_y + vy * t
+
+            local segBody = love.physics.newBody(world, segX, segY, "dynamic")
+            local segShape = love.physics.newCircleShape(1.5)
+            
+            -- High density + strong structural damping prevents the chain links from glitching or snapping wildly
+            local segFixture = love.physics.newFixture(segBody, segShape, 0.001) 
+            segFixture:setSensor(true) 
+            segBody:setLinearDamping(3.0)
+            segBody:setAngularDamping(3.0)
+
+            table.insert(player.rope.bodies, segBody)
+            
+            -- Bind rope links sequentially
+            local joint = love.physics.newRevoluteJoint(prevBody, segBody, segX, segY, false)
+            table.insert(player.rope.joints, joint)
+
+            prevBody = segBody
+        end
+
+        -- Secure final link directly to the target center point on the box edge
+        local finalJoint = love.physics.newRevoluteJoint(prevBody, closestBox.body, targetEdgeX, targetEdgeY, false)
+        table.insert(player.rope.joints, finalJoint)
+
+        -- STRENGTHENING STEP: Create an overarching structural RopeJoint constraint
+        -- This serves as an absolute maximum limit that keeps the physical bodies from rubber-banding.
+        player.rope.limitRope = love.physics.newRopeJoint(
+            player.body, 
+            closestBox.body, 
+            p_bottom_x, p_bottom_y, 
+            targetEdgeX, targetEdgeY, 
+            initialDistance + 5, -- Give it a tiny bit of slack so the chain segment loops don't look completely frozen
+            false
+        )
+    end
+end
+
+function releaseBox()
+    local player = PlayerX[1]
+    if player and player.rope then
+        -- Safely clean up structural limit joint
+        if player.rope.limitRope and not player.rope.limitRope:isDestroyed() then
+            player.rope.limitRope:destroy()
+        end
+        -- Safe breakdown of Box2D components
+        for _, joint in ipairs(player.rope.joints) do
+            if not joint:isDestroyed() then joint:destroy() end
+        end
+        for _, body in ipairs(player.rope.bodies) do
+            if not body:isDestroyed() then body:destroy() end
+        end
+        player.rope = nil
+    end
+end
+
+-- ============================================================================
+
+
 function createEnemies()
-    -- table.insert(box_i, createEnemyObj(-890, 520, 12.5, 25, 0))
-    table.insert(box_i, createEnemyObj(-8900, -520, 12.5, 25, 0))
+    table.insert(enemies, createEnemyObj(-8900, -520, 12.5, 25, 0))
 end
 
 function createEnemyObj(x, y, w, h, angle)
@@ -457,7 +694,7 @@ function createEnemyObj(x, y, w, h, angle)
     fixture:setFriction(0.1)
     fixture:setRestitution(0.2)
     
-    return {
+    local enemy = {
         type = "enemy",
         body = body,
         shape = shape,
@@ -466,6 +703,9 @@ function createEnemyObj(x, y, w, h, angle)
         h = h,
         particles = {}
     }
+    
+    table.insert(box_i, enemy) -- Keep for backward compatibility
+    return enemy
 end
 
 function updateEnemies(dt)
@@ -473,76 +713,70 @@ function updateEnemies(dt)
     
     local playerX, playerY = PlayerX[1].body:getPosition()
     
-    for _, enemy in ipairs(box_i) do
-        if enemy.type == "enemy" then
-            local body = enemy.body
-            local ex, ey = body:getPosition()
-            local dx = playerX - ex
-            local dy = playerY - ey
-
-            -- Calculate distance to player
-            local distance = math.sqrt(dx * dx + dy * dy)
-            
-            -- MAX FORCE LIMIT 
-            local maxForce = 130 
-            local forceMultiplier = 0.05
-            
-            -- Calculate desired force
-            local desiredForceX = dx * forceMultiplier
-            local desiredForceY = dy * forceMultiplier
-            local forceMagnitude = math.sqrt(desiredForceX * desiredForceX + desiredForceY * desiredForceY)
-            
-            -- Apply force limit
-            if forceMagnitude > maxForce then
-                local scale = maxForce / forceMagnitude
-                desiredForceX = desiredForceX * scale
-                desiredForceY = desiredForceY * scale
-            end
-            
-            -- Move toward player with limited force
-            body:applyForce(desiredForceX, desiredForceY)
-
-            -- -- Stabilization toward player
-            -- local desiredAngle = math.atan2(dy, dx)        -- angle to player
-            local currentAngle = body:getAngle()
-            local angularVelocity = body:getAngularVelocity()
-
-            -- -- Normalize angle difference (-π to π)
-            -- local angleDiff = desiredAngle - currentAngle
-            -- angleDiff = (angleDiff + math.pi) % (2 * math.pi) - math.pi
-
-            -- -- PD controller for rotation
-            -- local k = 100         -- proportional gain
-            -- local damping = 10  -- damping gain
-
-            -- local torque = angleDiff * k - angularVelocity * damping
-			
-			local k = 30     
-			local damping = 2.5 
-
-			local torque = -currentAngle * k - angularVelocity * damping
-            body:applyTorque(torque)
-
-            -- Emit particle at bottom (follows rotation)
-            local bx, by = body:getWorldPoint(0, enemy.h / 2)
-            createEnemyParticle(enemy, bx, by)
-
-            -- Update particles
-            for i = #enemy.particles, 1, -1 do
-                local p = enemy.particles[i]
-                p.life = p.life - 8 * dt
-                p.x = p.x + p.vx * dt
-                p.y = p.y + p.vy * dt
-                p.vy = p.vy + 0.05
-                
-                if p.life <= 0 then
-                    table.remove(enemy.particles, i)
-                end
-            end
-        end
+    for _, enemy in ipairs(enemies) do
+        updateSingleEnemy(enemy, playerX, playerY, dt)
     end
 end
 
+function updateSingleEnemy(enemy, playerX, playerY, dt)
+    local body = enemy.body
+    local ex, ey = body:getPosition()
+    local dx = playerX - ex
+    local dy = playerY - ey
+
+    -- Calculate distance to player
+    local distance = math.sqrt(dx * dx + dy * dy)
+    
+    -- MAX FORCE LIMIT 
+    local maxForce = 130 
+    local forceMultiplier = 0.05
+    
+    -- Calculate desired force
+    local desiredForceX = dx * forceMultiplier
+    local desiredForceY = dy * forceMultiplier
+    local forceMagnitude = math.sqrt(desiredForceX * desiredForceX + desiredForceY * desiredForceY)
+    
+    -- Apply force limit
+    if forceMagnitude > maxForce then
+        local scale = maxForce / forceMagnitude
+        desiredForceX = desiredForceX * scale
+        desiredForceY = desiredForceY * scale
+    end
+    
+    -- Move toward player with limited force
+    body:applyForce(desiredForceX, desiredForceY)
+
+    -- Stabilization
+    local currentAngle = body:getAngle()
+    local angularVelocity = body:getAngularVelocity()
+
+    local k = 30     
+    local damping = 2.5 
+
+    local torque = -currentAngle * k - angularVelocity * damping
+    body:applyTorque(torque)
+
+    -- Emit particle at bottom (follows rotation)
+    local bx, by = body:getWorldPoint(0, enemy.h / 2)
+    createEnemyParticle(enemy, bx, by)
+
+    -- Update particles
+    updateEnemyParticles(enemy, dt)
+end
+
+function updateEnemyParticles(enemy, dt)
+    for i = #enemy.particles, 1, -1 do
+        local p = enemy.particles[i]
+        p.life = p.life - 8 * dt
+        p.x = p.x + p.vx * dt
+        p.y = p.y + p.vy * dt
+        p.vy = p.vy + 0.05
+        
+        if p.life <= 0 then
+            table.remove(enemy.particles, i)
+        end
+    end
+end
 
 function createEnemyParticle(enemy, x, y)
     table.insert(enemy.particles, {
@@ -554,8 +788,13 @@ function createEnemyParticle(enemy, x, y)
     })
 end
 
+function drawEnemies()
+    for _, enemy in ipairs(enemies) do
+        drawSingleEnemy(enemy)
+    end
+end
 
-function drawEnemy(enemy)
+function drawSingleEnemy(enemy)
     love.graphics.setColor(0, 0, 0)
     local x, y = enemy.body:getPosition()
     love.graphics.polygon("fill", enemy.body:getWorldPoints(enemy.shape:getPoints()))
@@ -565,15 +804,35 @@ function drawEnemy(enemy)
     love.graphics.print("E", x - 4, y - 4)
     
     -- Draw particles
+    drawEnemyParticles(enemy)
+end
+
+function drawEnemyParticles(enemy)
     for _, p in ipairs(enemy.particles) do
         love.graphics.setColor(1, 1, 1, p.life/255)
         love.graphics.circle("fill", p.x, p.y, 1)
     end
 end
 
--- Box creation and drawing
+
 function createBoxes()
-    -- Already created in createBoundaries
+    -- Existing boxes
+    table.insert(box_i, createBoxObj(-800, 570, 8, 80, 0, 2, 0.2))
+    table.insert(box_i, createBoxObj(-840, 570, 8, 80, 0, 2, 0.2))
+    table.insert(box_i, createBoxObj(-820, 300, 80, 30, 0, 0.6, 0.2))
+    
+    -- Create grid of boxes with custom parameters
+    createBoxGrid(-1600, 800, 3, 3, 30, 30, 3, 0.1, 0.2)
+end
+
+function createBoxGrid(startX, startY, cols, rows, boxWidth, boxHeight, spacing, density, friction)
+    for row = 0, rows - 1 do
+        for col = 0, cols - 1 do
+            local x = startX + (col * (boxWidth + spacing))
+            local y = startY - (row * (boxHeight + spacing))
+            table.insert(box_i, createBoxObj(x, y, boxWidth, boxHeight, 0, density, friction))
+        end
+    end
 end
 
 function createBoxObj(x, y, w, h, angle, density, friction)
@@ -594,17 +853,34 @@ function createBoxObj(x, y, w, h, angle, density, friction)
     }
 end
 
-function drawBox(box)
-    love.graphics.setColor(0, 0, 0)
-    love.graphics.polygon("fill", box.body:getWorldPoints(box.shape:getPoints()))
+function drawBoxes()
+    for i, box in ipairs(box_i) do
+        if box.type == "box" then
+            drawSingleBox(box, "b" .. i)
+        end
+    end
 end
 
--- Ball creation and drawing
+function drawSingleBox(box, label)
+    local x, y = box.body:getPosition()
+    local angle = box.body:getAngle()
+
+    love.graphics.setColor(0, 0, 0)
+    love.graphics.polygon("fill", box.body:getWorldPoints(box.shape:getPoints()))
+
+    love.graphics.push()
+        love.graphics.translate(x, y)
+        love.graphics.rotate(angle)
+        love.graphics.setColor(1, 1, 1, 0.2) 
+        love.graphics.print(label, (-box.w / 2) + 2, -box.h / 2 + 2)
+    love.graphics.pop()
+end
+
 function createBalls()
-    table.insert(box_i, createBallObj(260, 430, 12.5, -700, 2, 0.5))
-    table.insert(box_i, createBallObj(-390, 150, 25, -15, 1, 0.1))
-    table.insert(box_i, createBallObj(-1590, 1000, 28, 0, 0.1, 0.8))
-    table.insert(box_i, createBallObj(-1300, 1000, 30, 0, 0.05, 0.8))
+    table.insert(balls, createBallObj(260, 430, 12.5, -700, 2, 0.5))
+    table.insert(balls, createBallObj(-390, 150, 25, -15, 1, 0.1))
+    table.insert(balls, createBallObj(-1590, 1000, 28, 0, 0.1, 0.8))
+    table.insert(balls, createBallObj(-1300, 1000, 30, 0, 0.05, 0.8))
 end
 
 function createBallObj(x, y, r, angularVelocity, density, friction)
@@ -618,16 +894,25 @@ function createBallObj(x, y, r, angularVelocity, density, friction)
         body:setAngularVelocity(angularVelocity)
     end
     
-    return {
+    local ball = {
         type = "ball",
         body = body,
         shape = shape,
         fixture = fixture,
         r = r
     }
+    
+    table.insert(box_i, ball) -- Keep for backward compatibility
+    return ball
 end
 
-function drawBall(ball)
+function drawBalls()
+    for _, ball in ipairs(balls) do
+        drawSingleBall(ball)
+    end
+end
+
+function drawSingleBall(ball)
     local x, y = ball.body:getPosition()
     local angle = ball.body:getAngle()
 
@@ -648,9 +933,10 @@ function drawBall(ball)
         x - r * sinA, y + r * cosA,
         x + r * sinA, y - r * cosA
     )
+	love.graphics.setLineWidth(1)
 end
 
--- Particle system
+
 function updateParticles(dt)
     for i = #particles, 1, -1 do
         local p = particles[i]
