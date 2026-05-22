@@ -157,8 +157,8 @@ function love.keypressed(key)
                         RopeSystem.destroy(ids[1])
                         RopeSystem.destroy(ids[2])
                         RopeSystem.create(o1, o2)
-                        local jx, jy = p.body:getWorldPoint(0, p.h / 2)
-                        for i = 1, 20 do EffectsSystem.createDamageEffect(jx, jy) end
+                        -- local jx, jy = p.body:getWorldPoint(0, p.h / 2)
+                        -- for i = 1, 20 do EffectsSystem.createDamageEffect(jx, jy) end
                     end
                 end
             end

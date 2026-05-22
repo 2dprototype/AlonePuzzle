@@ -7,7 +7,7 @@ local debugModeEnabled = false
 
 local Entities = {
     player = nil,
-    list = {} -- Universal flat collection optimized for quick index scanning
+    list = {}
 }
 
 function Entities.clear()
@@ -71,7 +71,6 @@ function Entities.createBall(x, y, r, angVel, density, friction)
     return ball
 end
 
-
 function Entities.createEnemy(x, y, w, h, angle)
     local cfg = Config.enemy
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
@@ -93,7 +92,6 @@ end
 function Entities.update(dt)
     if not Entities.player or not Entities.player.body or Entities.player.body:isDestroyed() then return end
     
-    -- Player Loop Processing
     local p = Entities.player
     if p.damageFlash then p.damageFlash = math.max(0, p.damageFlash - dt) end
     p.thrusterCooldown = math.max(0, (p.thrusterCooldown or 0) - dt)
@@ -144,7 +142,6 @@ function Entities.update(dt)
     if love.keyboard.isDown("pageup") then p.body:applyTorque(-pCfg.torqueForce) end
     if love.keyboard.isDown("pagedown") then p.body:applyTorque(pCfg.torqueForce) end
 
-    -- Processing Entities list
     local pX, pY = p.body:getPosition()
     local eCfg = Config.enemy
     
@@ -155,7 +152,6 @@ function Entities.update(dt)
         elseif e.body and e.body:isActive() then
             if e.damageFlash then e.damageFlash = math.max(0, e.damageFlash - dt) end
             
-            -- Enemy AI state logic handling
             if e.type == "enemy" then
                 local ex, ey = e.body:getPosition()
                 local dx, dy = pX - ex, pY - ey
@@ -206,30 +202,36 @@ function Entities.grab(isEnemyOnly)
 end
 
 function Entities.applyDamage(e, dmg)
-    if not e or not e.health then return end
+    if not e or not e.health or e.body:isDestroyed() then return end
     if e.type == "box" and e.sliceDepth then
         dmg = dmg * math.pow(0.85, e.sliceDepth)
     end
+    
     e.health = e.health - dmg
     e.damageFlash = 0.2
-    if e.health <= 0 then Entities.destroy(e) end
+    
+    if e.health <= 0 then 
+        Entities.destroy(e) 
+    end
 end
 
 function Entities.destroy(e)
     if not e or not e.body or e.body:isDestroyed() then return end
-    local x, y = e.body:getPosition()
-    for i = 1, 20 do EffectsSystem.createDamageEffect(x, y) end
     
     RopeSystem.destroyAllForObject(e)
-    
-    if e.type == "box" then Entities.sliceBox(e) end
+    if e.type == "box" then 
+        Entities.sliceBox(e) 
+    else
+        -- Non-box entities (like enemies or balls) just disintegrate
+        local ex, ey = e.body:getPosition()
+        EffectsSystem.createDamageEffect(ex - 15, ey, ex + 15, ey)
+    end
     e.body:destroy()
 end
 
 function Entities.sliceBox(box)
     if not box or box.type ~= "box" then return end
     
-    -- Stop slicing at 10 times maximum
     local currentDepth = box.sliceDepth or 0
     if currentDepth >= 10 then return end
     
@@ -254,52 +256,39 @@ function Entities.sliceBox(box)
     local wx = x + (localSlice.x * cosA - localSlice.y * sinA)
     local wy = y + (localSlice.x * sinA + localSlice.y * cosA)
     
-    -- CALCULATE SLICE LINE ENDPOINTS (the cut path)
     local sliceStartX, sliceStartY, sliceEndX, sliceEndY
     if sliceVert then
-        -- Vertical slice: from top to bottom of the box
         local halfH = h / 2
-        sliceStartX = wx
-        sliceStartY = y - halfH * sinA
-        sliceEndX = wx
-        sliceEndY = y + halfH * sinA
+        sliceStartX = wx - halfH * -sinA
+        sliceStartY = wy - halfH * cosA
+        sliceEndX = wx + halfH * -sinA
+        sliceEndY = wy + halfH * cosA
     else
-        -- Horizontal slice: from left to right of the box
         local halfW = w / 2
-        sliceStartX = x - halfW * cosA
-        sliceStartY = wy
-        sliceEndX = x + halfW * cosA
-        sliceEndY = wy
+        sliceStartX = wx - halfW * cosA
+        sliceStartY = wy - halfW * sinA
+        sliceEndX = wx + halfW * cosA
+        sliceEndY = wy + halfW * sinA
     end
     
-    -- DRAW THE SLICE LINE (orange hot cutter line)
-    if not _G.sliceEffects then _G.sliceEffects = {} end
-    table.insert(_G.sliceEffects, {
-        x1 = sliceStartX, y1 = sliceStartY,
-        x2 = sliceEndX, y2 = sliceEndY,
-        life = 0.25,  -- Line visible for 0.25 seconds
-        type = "sliceLine"
-    })
+    -- TRIGGER CUT LINE VISUAL EXACTLY ON THE SLICE PLANE
+    EffectsSystem.createDamageEffect(sliceStartX, sliceStartY, sliceEndX, sliceEndY)
     
-    -- ORANGE SPARKS ALONG THE CUT LINE (like a hot iron cutter)
     local numSparks = 16
     for i = 1, numSparks do
         local t = love.math.random()
         local sparkX = sliceStartX + (sliceEndX - sliceStartX) * t
         local sparkY = sliceStartY + (sliceEndY - sliceStartY) * t
         
-        -- Sparks fly outward from the cut line
         local angleRad = math.atan2(sliceEndY - sliceStartY, sliceEndX - sliceStartX)
         local perpAngle = angleRad + math.pi/2 + (love.math.random() - 0.5) * 1.2
         local speed = love.math.random(40, 100)
         local vx = math.cos(perpAngle) * speed + love.math.random(-10, 10)
         local vy = math.sin(perpAngle) * speed + love.math.random(-10, 10)
         
-        -- Orange glowing sparks
         EffectsSystem.createParticle(sparkX, sparkY, vx, vy, 20, 350, 2.5, "orangeSpark")
     end
     
-    -- ADD GLOWING EMBERS (orange/red)
     for i = 1, 12 do
         local t = love.math.random()
         local sparkX = sliceStartX + (sliceEndX - sliceStartX) * t
@@ -314,7 +303,6 @@ function Entities.sliceBox(box)
         EffectsSystem.createParticle(sparkX, sparkY, vx, vy, 15, 300, 3, "ember")
     end
     
-    -- ADD SMOKE PARTICLES (dark gray)
     for i = 1, 8 do
         local t = love.math.random()
         local sparkX = sliceStartX + (sliceEndX - sliceStartX) * t
@@ -339,7 +327,6 @@ function Entities.sliceBox(box)
     local d, f = box.fixture:getDensity(), box.fixture:getFriction()
     local lbl = box.label or "Box"
     
-    -- Health increase is minimal (5% per slice)
     local healthMultiplier = 1.05
     local newArea1 = w1 * h1
     local newArea2 = w2 * h2
@@ -371,15 +358,14 @@ function Entities.checkCollisions()
     local px, py = p.body:getPosition()
     
     for _, e in ipairs(Entities.list) do
-        if e.body and not e.body:isDestroyed() and e ~= p then
+        if e.body and not e.body:isDestroyed() and e ~= p and e.body:isActive() then
             local ex, ey = e.body:getPosition()
             local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
+            
             if e.type == "enemy" and dist < 30 then
                 Entities.applyDamage(e, 10)
-                EffectsSystem.createDamageEffect(ex, ey)
             elseif e.type == "box" and dist < 40 then
                 Entities.applyDamage(e, 5)
-                EffectsSystem.createDamageEffect(ex, ey)
             end
         end
     end
@@ -411,7 +397,6 @@ function Entities.draw()
                 love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))
             end
             
-            -- ONLY DRAW HEALTH BAR IN DEBUG MODE
             if debugModeEnabled and e.health and e.health < e.maxHealth then
                 local pct = e.health / e.maxHealth
                 local offsetY = (e.h or e.r*2) + 5

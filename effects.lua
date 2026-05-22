@@ -3,41 +3,29 @@ local EffectsSystem = {
     damageEffects = {}
 }
 
-function EffectsSystem.createDamageEffect(x, y)
-    -- Create a damage flash effect similar to slice lines
+function EffectsSystem.createDamageEffect(x1, y1, x2, y2, isLessIntense)
+    -- Insert the slice line with an intensity flag
     table.insert(EffectsSystem.damageEffects, {
-        x = x, y = y, life = 0.25,
-        vx = love.math.random(-30, 30), vy = love.math.random(-30, 30),
-        type = "damageFlash"
+        x1 = x1, y1 = y1,
+        x2 = x2, y2 = y2,
+        life = isLessIntense and 0.12 or 0.30, -- Damage ticks fade away much quicker
+        isLessIntense = isLessIntense,
+        type = "cutLine"
     })
     
-    -- Add orange sparks (like the slicing sparks)
-    local numSparks = 8
+    -- Drop particle counts significantly if it is just a less intense damage tick
+    local numSparks = isLessIntense and 2 or 12
     for i = 1, numSparks do
-        local angle = love.math.random() * math.pi * 2
-        local speed = love.math.random(40, 100)
-        local vx = math.cos(angle) * speed + love.math.random(-10, 10)
-        local vy = math.sin(angle) * speed + love.math.random(-10, 10)
+        local t = love.math.random()
+        local sparkX = x1 + (x2 - x1) * t
+        local sparkY = y1 + (y2 - y1) * t
         
-        EffectsSystem.createParticle(x, y, vx, vy, 15, 300, 2.5, "orangeSpark")
-    end
-    
-    -- Add glowing embers
-    for i = 1, 6 do
         local angle = love.math.random() * math.pi * 2
-        local speed = love.math.random(20, 60)
+        local speed = isLessIntense and love.math.random(20, 50) or love.math.random(40, 90)
         local vx = math.cos(angle) * speed
         local vy = math.sin(angle) * speed
         
-        EffectsSystem.createParticle(x, y, vx, vy, 12, 250, 3, "ember")
-    end
-    
-    -- Add smoke
-    for i = 1, 4 do
-        local vx = love.math.random(-20, 20)
-        local vy = love.math.random(-30, 0)
-        
-        EffectsSystem.createParticle(x, y, vx, vy, 20, 120, 4, "smoke")
+        EffectsSystem.createParticle(sparkX, sparkY, vx, vy, 12, 350, 1.5, "orangeSpark")
     end
 end
 
@@ -50,27 +38,12 @@ function EffectsSystem.createParticle(x, y, vx, vy, life, fadeSpeed, size, pType
 end
 
 function EffectsSystem.update(dt)
-    -- Update damage effects
     for i = #EffectsSystem.damageEffects, 1, -1 do
         local fx = EffectsSystem.damageEffects[i]
         fx.life = fx.life - dt
-        fx.x = fx.x + fx.vx * dt
-        fx.y = fx.y + fx.vy * dt
         if fx.life <= 0 then table.remove(EffectsSystem.damageEffects, i) end
     end
     
-    -- Update slice effects (the cutting lines)
-    if _G.sliceEffects then
-        for i = #_G.sliceEffects, 1, -1 do
-            local se = _G.sliceEffects[i]
-            se.life = se.life - dt
-            if se.life <= 0 then
-                table.remove(_G.sliceEffects, i)
-            end
-        end
-    end
-    
-    -- Update particles
     for i = #EffectsSystem.particles, 1, -1 do
         local p = EffectsSystem.particles[i]
         p.life = p.life - dt * (p.fadeSpeed or 200)
@@ -83,55 +56,33 @@ function EffectsSystem.update(dt)
 end
 
 function EffectsSystem.draw()
-    -- Draw damage effects (like slice lines but radial)
     for _, fx in ipairs(EffectsSystem.damageEffects) do
-        if fx.type == "damageFlash" then
-            local alpha = math.min(1, fx.life * 4)  -- Fades out quickly
+        if fx.type == "cutLine" then
+            local alpha = math.min(1, fx.life * 4)
+            -- Scale overall transparency down if it's a minor damage preview cut
+            if fx.isLessIntense then alpha = alpha * 0.35 end
             
-            -- Outer glow (bright orange)
-            love.graphics.setLineWidth(6)
-            love.graphics.setColor(1, 0.3, 0, alpha * 0.5)
-            love.graphics.circle("line", fx.x, fx.y, 12 * fx.life)
+            -- 1. Outer heavy glow
+            love.graphics.setLineWidth(fx.isLessIntense and 3 or 6)
+            love.graphics.setColor(1, 0.25, 0, alpha * 0.4)
+            love.graphics.line(fx.x1, fx.y1, fx.x2, fx.y2)
             
-            -- Middle glow (orange)
-            love.graphics.setLineWidth(3)
-            love.graphics.setColor(1, 0.5, 0, alpha * 0.7)
-            love.graphics.circle("line", fx.x, fx.y, 8 * fx.life)
+            -- 2. Mid-tone neon line
+            love.graphics.setLineWidth(fx.isLessIntense and 1.5 or 3)
+            love.graphics.setColor(1, 0.50, 0, alpha * 0.7)
+            love.graphics.line(fx.x1, fx.y1, fx.x2, fx.y2)
             
-            -- Inner core (yellow/white hot)
-            love.graphics.setLineWidth(1.5)
-            love.graphics.setColor(1, 0.8, 0.2, alpha)
-            love.graphics.circle("line", fx.x, fx.y, 4 * fx.life)
+            -- 3. White-hot inner core (Skip entirely on low intensity for a duller iron look)
+            if not fx.isLessIntense then
+                love.graphics.setLineWidth(1.2)
+                love.graphics.setColor(1, 0.85, 0.3, alpha)
+                love.graphics.line(fx.x1, fx.y1, fx.x2, fx.y2)
+            end
             
-            -- Reset line width
             love.graphics.setLineWidth(1)
         end
     end
     
-    -- Draw slice lines (orange hot cutter effect)
-    if _G.sliceEffects then
-        for _, se in ipairs(_G.sliceEffects) do
-            if se.type == "sliceLine" then
-                local alpha = math.min(1, se.life * 4)
-                -- Outer glow (bright orange)
-                love.graphics.setLineWidth(8)
-                love.graphics.setColor(1, 0.3, 0, alpha * 0.4)
-                love.graphics.line(se.x1, se.y1, se.x2, se.y2)
-                -- Middle glow (orange)
-                love.graphics.setLineWidth(4)
-                love.graphics.setColor(1, 0.5, 0, alpha * 0.7)
-                love.graphics.line(se.x1, se.y1, se.x2, se.y2)
-                -- Inner core (yellow/white hot)
-                love.graphics.setLineWidth(2)
-                love.graphics.setColor(1, 0.8, 0.2, alpha)
-                love.graphics.line(se.x1, se.y1, se.x2, se.y2)
-                -- Reset line width
-                love.graphics.setLineWidth(1)
-            end
-        end
-    end
-    
-    -- Draw particles (rest of the code remains the same)
     for _, p in ipairs(EffectsSystem.particles) do
         local alpha = math.min(1, p.life / 50)
         
