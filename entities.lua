@@ -2,6 +2,7 @@ local Config = require("config")
 local WorldManager = require("world_manager")
 local RopeSystem = require("rope")
 local EffectsSystem = require("effects")
+local Water = require("water")
 
 local debugModeEnabled = false
 
@@ -141,6 +142,16 @@ function Entities.update(dt)
     p.body:applyTorque(-p.body:getAngle() * pCfg.torqueForce - p.body:getAngularVelocity() * 2.5)
     if love.keyboard.isDown("pageup") then p.body:applyTorque(-pCfg.torqueForce) end
     if love.keyboard.isDown("pagedown") then p.body:applyTorque(pCfg.torqueForce) end
+    
+
+    local px, py = p.body:getPosition()
+    local waterArea = Water.isPointInWater(px, py)
+    if waterArea then
+        -- Apply water drag correctly
+        local vx, vy = p.body:getLinearVelocity()
+        local resistance = waterArea.viscousDrag * 0.5
+        p.body:applyForce(-vx * resistance, -vy * resistance)
+    end
 
     local pX, pY = p.body:getPosition()
     local eCfg = Config.enemy

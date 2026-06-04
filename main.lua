@@ -5,6 +5,7 @@ local WorldManager = require("world_manager")
 local RopeSystem = require("rope")
 local EffectsSystem = require("effects")
 local Entities = require("entities")
+local Water = require("water")
 
 local game = { debugMode = false, state = "playing" }
 local cameraInstructions = {
@@ -18,7 +19,8 @@ function love.load()
     WorldManager.init()
     
     -- Instantiate Scene Objects
-    Entities.createPlayer(-820, 0)
+    -- Entities.createPlayer(-820, 0)
+    Entities.createPlayer(-1655, 986)
     
     -- Populating Physical Rigid Props
     Entities.createBox(-800, 570, 8, 80, 0, 2, 0.2)
@@ -28,9 +30,9 @@ function love.load()
     Entities.createBall(-390, 150, 25, -15, 1, 0.1)
     
     -- Grid Matrix Generator Setup (more boxes)
-    for r = 0, 2 do
+    for r = 0, 3 do
         for c = 0, 2 do
-            Entities.createBox(-1600 + (c * 60), 800 - (r * 60), 30, 30, 0, 0.1, 0.2, string.format("Grid%d%d", c, r))
+            Entities.createBox(-1830 + (c * 30), 830 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r))
         end
     end
     
@@ -62,6 +64,14 @@ function love.load()
     WorldManager.createBoundary(-1685, 905, 10, 200, 0)
     WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
     WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
+    -- new
+    WorldManager.createBoundary(-1885, 905, 10, 200, 0)
+    WorldManager.createBoundary(-1785, 1005, 210, 10, 0)
+    
+    -- Create water areas
+    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
+    -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
+    -- Water.createArea(0, 500, 300, 100, 0.8, 0.7)       -- Sinking water (danger)
     
     WorldManager.updateSpatialGrid(Entities.list)
     
@@ -81,6 +91,7 @@ function love.update(dt)
     
     WorldManager.world:update(dt)
     Entities.update(dt)
+    Water.update(Entities.list)
     Entities.checkCollisions()
     RopeSystem.updateVisuals()
     EffectsSystem.update(dt)
@@ -109,12 +120,69 @@ function love.draw()
     Entities.draw()
     RopeSystem.drawAll(game.debugMode)
     EffectsSystem.draw()
+    Water.draw()
     
     love.graphics.setFont(oldFont)
     if game.debugMode then drawDebugData() end
     
     love.graphics.pop()
     drawUI()
+end
+
+function love.mousepressed(x, y, button, istouch)
+    -- Convert screen coordinates to world coordinates
+    local worldX, worldY = Camera:screenToWorld(x, y)
+    
+    if button == 1 then -- Left click: grab object
+        local player = Entities.player
+        if not player or #(player.ropeIds or {}) >= 2 then return end
+        
+        -- Find nearest entity to mouse cursor
+        local closest, minDist = nil, Config.enemy.grabRadius * 2 -- larger radius for mouse
+        for _, e in ipairs(Entities.list) do
+            if e.body and not e.body:isDestroyed() and e ~= player then
+                -- Check if not already connected via rope
+                if not RopeSystem.connects(player, e) then
+                    local ex, ey = e.body:getPosition()
+                    local dx, dy = worldX - ex, worldY - ey
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    if dist < minDist then
+                        minDist = dist
+                        closest = e
+                    end
+                end
+            end
+        end
+        
+        if closest then
+            RopeSystem.create(player, closest)
+        end
+        
+    elseif button == 2 then -- Right click: release all ropes from player
+        local player = Entities.player
+        if player then
+            RopeSystem.destroyAllForObject(player)
+        end
+    end
+end
+
+function love.mousemoved(x, y)
+    local worldX, worldY = Camera:screenToWorld(x, y)
+    hoveredEntity = nil
+    local minDist = 50 -- hover detection radius
+    for _, e in ipairs(Entities.list) do
+        if e.body and not e.body:isDestroyed() then
+            local ex, ey = e.body:getPosition()
+            local dx, dy = worldX - ex, worldY - ey
+            local dist = math.sqrt(dx*dx + dy*dy)
+            -- Rough distance based on entity size
+            local threshold = (e.r or math.max(e.w or 20, e.h or 20)) + 10
+            if dist < threshold and dist < minDist then
+                minDist = dist
+                hoveredEntity = e
+            end
+        end
+    end
 end
 
 function love.keypressed(key)
@@ -128,10 +196,14 @@ function love.keypressed(key)
     elseif key == "f5" then
         game.debugMode = not game.debugMode
         Entities.setDebugMode(game.debugMode)
-    elseif key == "tab" then
-        -- Entities.sliceTouchingObject()
-        print("tab")
+    elseif key == "f6" then
+        Water.setDebug(not Water.debugMode)
     elseif key == "p" then game.state = (game.state == "playing") and "paused" or "playing"
+    elseif key == "tab" then
+        local p = Entities.player
+        if p then
+            RopeSystem.destroyAllForObject(p) 
+        end
     elseif key == "space" then
         local p = Entities.player
         if p then

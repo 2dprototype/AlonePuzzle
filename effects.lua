@@ -97,6 +97,9 @@ function EffectsSystem.draw()
             love.graphics.setColor(1, 0.4, 0.05, alpha * 0.9)
         elseif p.type == "smoke" then
             love.graphics.setColor(0.3, 0.3, 0.3, alpha * 0.5)
+        elseif p.type == "water" then
+            local blue = 0.5 + math.random() * 0.5
+            love.graphics.setColor(0.2, 0.5, blue, alpha * 0.8)
         else
             love.graphics.setColor(1, 1, 1, alpha)
         end
