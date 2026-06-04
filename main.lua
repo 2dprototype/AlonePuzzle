@@ -6,6 +6,7 @@ local RopeSystem = require("rope")
 local EffectsSystem = require("effects")
 local Entities = require("entities")
 local Water = require("water")
+local Whale = require("whale")
 
 local game = { debugMode = false, state = "playing" }
 local cameraInstructions = {
@@ -69,9 +70,14 @@ function love.load()
     WorldManager.createBoundary(-1785, 1005, 210, 10, 0)
     
     -- Create water areas
-    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
+    -- Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
     -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
     -- Water.createArea(0, 500, 300, 100, 0.8, 0.7)       -- Sinking water (danger)
+    
+    -- Create whales in water areas
+    -- Whale.create(-1850, 900, "gentle", 45, 28)    -- Gentle whale
+    Water.createArea(-1600, 650, 400, 250, 1.2, 0.9)   -- Floating water
+    Whale.create(-1500, 650, "gentle", 30, 18)       -- Baby whale
     
     WorldManager.updateSpatialGrid(Entities.list)
     
@@ -92,6 +98,7 @@ function love.update(dt)
     WorldManager.world:update(dt)
     Entities.update(dt)
     Water.update(Entities.list)
+    Whale.update(dt, Entities.player, Entities.list)
     Entities.checkCollisions()
     RopeSystem.updateVisuals()
     EffectsSystem.update(dt)
@@ -120,6 +127,7 @@ function love.draw()
     Entities.draw()
     RopeSystem.drawAll(game.debugMode)
     EffectsSystem.draw()
+    Whale.draw(game.debugMode)
     Water.draw()
     
     love.graphics.setFont(oldFont)
