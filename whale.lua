@@ -4,15 +4,14 @@ local Whale = {
     nextId = 1
 }
 
--- Whale species with unique physical traits and behaviors
 local whaleTypes = {
     gentle = {
         name = "Blue Whale",
         color = {0.15, 0.25, 0.45},
         bellyColor = {0.3, 0.4, 0.6},
-        speed = 400,          -- Thrust force
-        turnSpeed = 1.5,      -- How fast they can rotate
-        mass = 1200,
+        speed = 800,
+        turnSpeed = 1.5,
+        mass = 1000,
         health = 500,
         damage = 0,
         friendly = true,
@@ -22,11 +21,11 @@ local whaleTypes = {
     },
     aggressive = {
         name = "Orca",
-        color = {0.05, 0.05, 0.08}, -- Black
-        bellyColor = {0.9, 0.9, 0.95}, -- White
-        speed = 800,
+        color = {0.05, 0.05, 0.08},
+        bellyColor = {0.9, 0.9, 0.95},
+        speed = 1000,
         turnSpeed = 4.0,
-        mass = 450,
+        mass = 60,
         health = 250,
         damage = 30,
         friendly = false,
@@ -40,7 +39,7 @@ local whaleTypes = {
         bellyColor = {0.4, 0.5, 0.7},
         speed = 300,
         turnSpeed = 2.5,
-        mass = 150,
+        mass = 20,
         health = 100,
         damage = 0,
         friendly = true,
@@ -50,22 +49,18 @@ local whaleTypes = {
     }
 }
 
--- Create a whale
 function Whale.create(x, y, whaleType)
     local WorldManager = require("world_manager")
     local typeData = whaleTypes[whaleType] or whaleTypes.gentle
     
-    -- Create physics body
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
-    -- Use a pill/capsule shape for better aquatic collision
     local shape = love.physics.newRectangleShape(typeData.w * 0.8, typeData.h * 0.8)
     local fixture = love.physics.newFixture(body, shape, typeData.mass)
     
-    -- Low friction, high damping so they glide smoothly
     fixture:setFriction(0.1)
     fixture:setRestitution(0.2)
-    body:setLinearDamping(0.8)  -- Water drag
-    body:setAngularDamping(2.0) -- Prevents spinning out of control
+    body:setLinearDamping(1.2)
+    body:setAngularDamping(0.3)
     
     local whale = {
         id = Whale.nextId,
@@ -76,30 +71,176 @@ function Whale.create(x, y, whaleType)
         fixture = fixture,
         data = typeData,
         
-        -- Vitals
+        ropeIds = {},
+        
         health = typeData.health,
         maxHealth = typeData.health,
         damageFlash = 0,
         
-        -- Animation State
         animPhase = love.math.random() * math.pi * 2,
         tailAngle = 0,
         inWater = true,
         blowholeTimer = 0,
         
-        -- AI State
-        state = "swim",
+        state = "idle",
+        stateTimer = love.math.random(2, 5),
+        path = {},
+        pathIndex = 1,
         targetX = x,
         targetY = y,
         waypointTimer = 0,
         lastAttackTime = 0,
-        attackCooldown = 1.5
+        attackCooldown = 1.5,
+        driveDirection = 1,
+        
+        stuckTimer = 0,
+        lastDistanceToTarget = nil
     }
     
     table.insert(Whale.whales, whale)
     Whale.nextId = Whale.nextId + 1
-    
     return whale
+end
+
+function Whale.generatePath(x1, y1, x2, y2, waterArea)
+    local path = {}
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local dist = math.sqrt(dx^2 + dy^2)
+
+    if dist < 150 then
+        table.insert(path, {x = x2, y = y2})
+        return path
+    end
+
+    local numWaypoints = love.math.random(1, 2)
+    for i = 1, numWaypoints do
+        local t = i / (numWaypoints + 1)
+        local bx = x1 + dx * t
+        local by = y1 + dy * t
+        
+        local perpX = -dy / dist
+        local perpY = dx / dist
+        local offset = love.math.random(-150, 150)
+        
+        local wx = bx + perpX * offset
+        local wy = by + perpY * offset
+        
+        if waterArea then
+            wx = math.max(waterArea.x + 40, math.min(waterArea.x + waterArea.w - 40, wx))
+            wy = math.max(waterArea.y + 40, math.min(waterArea.y + waterArea.h - 40, wy))
+        end
+        
+        table.insert(path, {x = wx, y = wy})
+    end
+    
+    table.insert(path, {x = x2, y = y2})
+    return path
+end
+
+-- Smart path generator that avoids obstacles using recursive raycasting & LOS checking
+function Whale.generateSmartPath(x1, y1, x2, y2, waterArea, whale, depth)
+    depth = depth or 0
+    local MAX_DEPTH = 3  -- Lowered slightly to prevent insane recursive loops
+    local path = {}
+    
+    local function distance(x1, y1, x2, y2)
+        local dx = x2 - x1
+        local dy = y2 - y1
+        return math.sqrt(dx*dx + dy*dy)
+    end
+	
+    if distance(x1, y1, x2, y2) < 0.1 then
+        table.insert(path, {x = x2, y = y2})
+        return path
+    end
+    
+    local hitPoint = nil
+    local hitNormal = nil
+    
+    local function rayCallback(fixture, x, y, xn, yn, fraction)
+        local body = fixture:getBody()
+        if fixture == whale.fixture then return -1 end
+        if fixture:isSensor() then return -1 end
+        if body:getType() == "dynamic" then return -1 end
+        
+        hitPoint = {x = x, y = y}
+        hitNormal = {x = xn, y = yn}
+        return fraction
+    end
+    
+    local WorldManager = require("world_manager")
+    WorldManager.world:rayCast(x1, y1, x2, y2, rayCallback)
+    
+    if not hitPoint then
+        -- Direct path is clear
+        table.insert(path, {x = x2, y = y2})
+        return path
+    end
+    
+    if depth >= MAX_DEPTH then
+        table.insert(path, {x = x2, y = y2})
+        return path
+    end
+    
+    local perpX = -hitNormal.y
+    local perpY = hitNormal.x
+    local margin = (whale and whale.data.w or 60) * 1.0
+    
+    -- Push the base point out along the normal to prevent waypoints embedding inside walls
+    local pushOut = margin * 0.5
+    local basePoint = {
+        x = hitPoint.x + hitNormal.x * pushOut,
+        y = hitPoint.y + hitNormal.y * pushOut
+    }
+    
+    local waypointLeft = {x = basePoint.x + perpX * margin, y = basePoint.y + perpY * margin}
+    local waypointRight = {x = basePoint.x - perpX * margin, y = basePoint.y - perpY * margin}
+    
+    if waterArea then
+        local pad = 30
+        waypointLeft.x = math.max(waterArea.x + pad, math.min(waterArea.x + waterArea.w - pad, waypointLeft.x))
+        waypointLeft.y = math.max(waterArea.y + pad, math.min(waterArea.y + waterArea.h - pad, waypointLeft.y))
+        waypointRight.x = math.max(waterArea.x + pad, math.min(waterArea.x + waterArea.w - pad, waypointRight.x))
+        waypointRight.y = math.max(waterArea.y + pad, math.min(waterArea.y + waterArea.h - pad, waypointRight.y))
+    end
+    
+	-- Check Line of Sight (LOS) for immediate viable paths
+    local function hasClearPath(sx, sy, ex, ey)
+        -- 🐛 FIX 2: Protect the secondary LOS raycasts too
+        if distance(sx, sy, ex, ey) < 0.1 then return true end
+        
+        local clear = true
+        WorldManager.world:rayCast(sx, sy, ex, ey, function(f)
+            if f == whale.fixture or f:isSensor() or f:getBody():getType() == "dynamic" then return -1 end
+            clear = false
+            return 0 
+        end)
+        return clear
+    end
+
+    local leftClear = hasClearPath(waypointLeft.x, waypointLeft.y, x2, y2)
+    local rightClear = hasClearPath(waypointRight.x, waypointRight.y, x2, y2)
+    
+    local chosen = nil
+    if leftClear and not rightClear then
+        chosen = waypointLeft
+    elseif rightClear and not leftClear then
+        chosen = waypointRight
+    else
+        -- If both clear or both blocked, pick the shortest total distance
+        local leftDist = distance(x1, y1, waypointLeft.x, waypointLeft.y) + distance(waypointLeft.x, waypointLeft.y, x2, y2)
+        local rightDist = distance(x1, y1, waypointRight.x, waypointRight.y) + distance(waypointRight.x, waypointRight.y, x2, y2)
+        chosen = leftDist < rightDist and waypointLeft or waypointRight
+    end
+    
+    local firstHalf = Whale.generateSmartPath(x1, y1, chosen.x, chosen.y, waterArea, whale, depth + 1)
+    local secondHalf = Whale.generateSmartPath(chosen.x, chosen.y, x2, y2, waterArea, whale, depth + 1)
+    
+    for i = 1, #firstHalf - 1 do table.insert(path, firstHalf[i]) end
+    for i = 1, #secondHalf do table.insert(path, secondHalf[i]) end
+    
+    return path
 end
 
 function Whale.update(dt, player, entities)
@@ -108,151 +249,349 @@ function Whale.update(dt, player, entities)
     
     for i = #Whale.whales, 1, -1 do
         local w = Whale.whales[i]
-        
         if not w.body or w.body:isDestroyed() then
             table.remove(Whale.whales, i)
             goto continue
         end
         
-        if w.damageFlash > 0 then
-            w.damageFlash = math.max(0, w.damageFlash - dt)
-        end
+        if w.damageFlash > 0 then w.damageFlash = math.max(0, w.damageFlash - dt) end
         
         local wx, wy = w.body:getPosition()
         local vx, vy = w.body:getLinearVelocity()
         local currentSpeed = math.sqrt(vx^2 + vy^2)
         local waterArea = Water.isPointInWater(wx, wy)
+
+        if waterArea then
+            local mass = w.body:getMass()
+            local gravity = 9.81 * 64
+            w.body:applyForce(0, -mass * gravity)
+            w.body:applyForce(-vx * 0.2, -vy * 0.2)
+        end
         
-        -- Surface breathing / Blowhole mechanic
-        local wasInWater = w.inWater
         w.inWater = (waterArea ~= nil)
         
-        if not wasInWater and w.inWater then
-            -- Create a big splash when falling back into water
-            Water.createSplash(wx, wy, currentSpeed)
-        elseif wasInWater and not w.inWater and w.blowholeTimer <= 0 then
-            -- Blow spout when breaching the surface
-            w.blowholeTimer = 5.0 -- Cooldown for blowing water
-            for b = 1, 15 do
-                EffectsSystem.createParticle(
-                    wx, wy - w.data.h/2, 
-                    love.math.random(-20, 20), love.math.random(-150, -50), 
-                    10, 255, 1.5, "water"
-                )
-            end
-        end
-        
-        if w.blowholeTimer > 0 then
-            w.blowholeTimer = w.blowholeTimer - dt
-        end
-        
-        -- Procedural Animation update
-        -- Tail wags faster when moving faster
         local wagSpeed = math.max(2, currentSpeed * 0.02)
         w.animPhase = w.animPhase + (dt * wagSpeed)
-        w.tailAngle = math.sin(w.animPhase) * 0.4 -- 0.4 radians max wag
+        w.tailAngle = math.sin(w.animPhase) * 0.4
         
-        -- AI Update
+        if w.blowholeTimer > 0 then w.blowholeTimer = w.blowholeTimer - dt end
+
         if w.inWater then
             Whale.updateAI(w, dt, player, waterArea)
         else
-            -- Gravity takes over in the air, minimal steering
             w.body:applyTorque(w.body:getAngularVelocity() * -0.5 * w.body:getMass())
         end
         
-        -- Combat / Player Collision
         if player and player.body and not player.body:isDestroyed() and not w.data.friendly then
             local px, py = player.body:getPosition()
             local dist = math.sqrt((wx-px)^2 + (wy-py)^2)
-            
             if dist < (w.data.w/2 + 20) then
                 local currentTime = love.timer.getTime()
                 if currentTime - w.lastAttackTime >= w.attackCooldown then
-                    local Entities = require("entities")
-                    Entities.applyDamage(player, w.data.damage)
+                    require("entities").applyDamage(player, w.data.damage)
                     w.lastAttackTime = currentTime
                     EffectsSystem.createDamageEffect(px, py, px, py, true)
-                    
-                    -- Recoil
-                    w.body:applyLinearImpulse(-vx * 0.5, -vy * 0.5)
                 end
             end
         end
-        
         ::continue::
     end
 end
 
--- Realistic steering AI
 function Whale.updateAI(whale, dt, player, waterArea)
+    local WorldManager = require("world_manager")
+    local Water = require("water")
     local wx, wy = whale.body:getPosition()
     local px, py = player and player.body and player.body:getPosition() or wx, wy
     local distToPlayer = math.sqrt((wx-px)^2 + (wy-py)^2)
-    
-    -- State transitions
-    if not whale.data.friendly and distToPlayer < 400 then
-        whale.state = "hunt"
-        whale.targetX, whale.targetY = px, py
+
+    -- ========== STATE TRANSITIONS ==========
+    if not whale.data.friendly and distToPlayer < 600 then
+        if Water.isPointInWater(px, py) then
+            if whale.state ~= "hunt" or (whale.stateTimer and whale.stateTimer <= 0) then
+                whale.state = "hunt"
+                whale.path = Whale.generateSmartPath(wx, wy, px, py, waterArea, whale)
+                whale.pathIndex = 1
+                whale.stateTimer = 1.0
+                whale.driveDirection = love.math.random() > 0.5 and 1 or -1
+                whale.stuckTimer = 0
+                whale.lastDistanceToTarget = nil
+            end
+        elseif whale.state == "hunt" then
+            whale.state = "idle"
+            whale.stateTimer = love.math.random(2, 5)
+        end
     else
-        whale.state = "wander"
-        whale.waypointTimer = whale.waypointTimer - dt
-        if whale.waypointTimer <= 0 then
-            -- Pick a new waypoint inside the water
-            whale.waypointTimer = love.math.random(3, 8)
-            local wanderRadius = 300
-            whale.targetX = wx + love.math.random(-wanderRadius, wanderRadius)
-            -- Tendency to stay submerged, but occasionally breach
-            if love.math.random() < 0.2 then
-                whale.targetY = waterArea.y - 50 -- Target above water to breach!
-            else
-                whale.targetY = math.min(wy + love.math.random(-wanderRadius, wanderRadius), waterArea.y + waterArea.h - 50)
+        if whale.state == "hunt" then
+            whale.state = "idle"
+            whale.stateTimer = love.math.random(2, 5)
+        end
+    end
+
+    if whale.state == "idle" and whale.stateTimer then
+        whale.stateTimer = whale.stateTimer - dt
+    elseif whale.state == "hunt" and whale.stateTimer then
+        whale.stateTimer = whale.stateTimer - dt
+    end
+
+    -- ========== IDLE ==========
+    if whale.state == "idle" then
+        local currentAngle = whale.body:getAngle()
+        -- Dynamic Stabilizer: targets 0 (right) or PI (left) based on closest orientation
+        local targetAngle = (math.cos(currentAngle) < 0) and math.pi or 0
+        local angleError = (targetAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+        
+        local stabilizerTorque = angleError * whale.body:getMass() * 4
+        whale.body:applyTorque(stabilizerTorque)
+        
+        local angVel = whale.body:getAngularVelocity()
+        whale.body:applyTorque(-angVel * whale.body:getMass() * 0.5)
+
+        if whale.stateTimer <= 0 then
+            whale.state = "wander"
+            whale.stateTimer = nil
+            whale.driveDirection = love.math.random() > 0.5 and 1 or -1
+
+            if waterArea then
+                local padding = whale.data.w
+                local tx = love.math.random(waterArea.x + padding, waterArea.x + waterArea.w - padding)
+                local ty = love.math.random(waterArea.y + padding, waterArea.y + waterArea.h - padding)
+                whale.path = Whale.generateSmartPath(wx, wy, tx, ty, waterArea, whale)
+                whale.pathIndex = 1
+                whale.stuckTimer = 0
+                whale.lastDistanceToTarget = nil
+            end
+        end
+        return
+    end
+
+    -- ========== PATH FOLLOWING (wander or hunt) ==========
+    if not whale.path or whale.pathIndex > #whale.path then
+        whale.state = "idle"
+        whale.stateTimer = love.math.random(3, 8)
+        return
+    end
+
+    local target = whale.path[whale.pathIndex]
+    local dx = target.x - wx
+    local dy = target.y - wy
+    local distToTarget = math.sqrt(dx*dx + dy*dy)
+
+    local arrivalDist = whale.data.w * 0.4
+    if distToTarget < arrivalDist then
+        whale.pathIndex = whale.pathIndex + 1
+        if whale.pathIndex > #whale.path then
+            whale.state = "idle"
+            whale.stateTimer = love.math.random(3, 8)
+            return
+        end
+        target = whale.path[whale.pathIndex]
+        dx = target.x - wx
+        dy = target.y - wy
+        distToTarget = math.sqrt(dx*dx + dy*dy)
+        whale.stuckTimer = 0
+        whale.lastDistanceToTarget = nil
+    end
+
+    -- ========== STUCK DETECTION ==========
+    if whale.lastDistanceToTarget == nil then
+        whale.lastDistanceToTarget = distToTarget
+    else
+        if distToTarget >= whale.lastDistanceToTarget - 5 then
+            whale.stuckTimer = whale.stuckTimer + dt
+            if whale.stuckTimer > 3.0 then
+                if whale.state == "hunt" and player and player.body then
+                    local newTarget = {x = player.body:getX(), y = player.body:getY()}
+                    whale.path = Whale.generateSmartPath(wx, wy, newTarget.x, newTarget.y, waterArea, whale)
+                else
+                    local padding = whale.data.w
+                    local tx = love.math.random(waterArea.x + padding, waterArea.x + waterArea.w - padding)
+                    local ty = love.math.random(waterArea.y + padding, waterArea.y + waterArea.h - padding)
+                    whale.path = Whale.generateSmartPath(wx, wy, tx, ty, waterArea, whale)
+                end
+                whale.pathIndex = 1
+                whale.stuckTimer = 0
+                whale.lastDistanceToTarget = nil
+                return
+            end
+        else
+            whale.stuckTimer = 0
+        end
+        whale.lastDistanceToTarget = distToTarget
+    end
+
+    -- ========== STEERING TOWARD TARGET ==========
+    local desiredAngle = math.atan2(dy, dx)
+    local currentAngle = whale.body:getAngle()
+    local angleDiff = (desiredAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+
+    local steeringTorque = angleDiff * whale.data.turnSpeed * whale.body:getMass() * 8
+    whale.body:applyTorque(steeringTorque)
+
+    -- ========== DYNAMIC ANGLE STABILIZER (keep horizontal) ==========
+    local targetStabilizeAngle = (math.cos(currentAngle) < 0) and math.pi or 0
+    local stabilizerError = (targetStabilizeAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+    local stabilizerTorque = stabilizerError * whale.body:getMass() * 5
+    whale.body:applyTorque(stabilizerTorque)
+
+    -- ========== ANGULAR DAMPING ==========
+    local angVel = whale.body:getAngularVelocity()
+    whale.body:applyTorque(-angVel * whale.body:getMass() * 0.6)
+
+    -- ========== OBSTACLE AVOIDANCE ==========
+    local lookAhead = whale.data.w * 1.2
+    local rayEndX = wx + math.cos(currentAngle) * lookAhead
+    local rayEndY = wy + math.sin(currentAngle) * lookAhead
+
+    local hitFraction = 1.0
+    local hitNormalX, hitNormalY = 0, 0
+
+    local function rayCallback(fixture, x, y, xn, yn, fraction)
+        if fixture:isSensor() or fixture:getBody():getType() == "dynamic" then return -1 end
+        if fraction < hitFraction then
+            hitFraction = fraction
+            hitNormalX, hitNormalY = xn, yn
+        end
+        return fraction
+    end
+
+    WorldManager.world:rayCast(wx, wy, rayEndX, rayEndY, rayCallback)
+
+    local finalAngle = desiredAngle
+    if hitFraction < 1.0 then
+        local avoidAngle = math.atan2(hitNormalY, hitNormalX)
+        finalAngle = avoidAngle + (whale.driveDirection * math.pi/2)
+        local avoidAngleDiff = (finalAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+        whale.body:applyTorque(avoidAngleDiff * whale.data.turnSpeed * whale.body:getMass() * 10)
+    end
+
+    -- ========== THRUST ==========
+    local finalAngleDiff = (finalAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+    local alignment = math.cos(finalAngleDiff)
+    if alignment > 0.2 then
+        local thrust = whale.data.speed * whale.body:getMass()
+        local multiplier = (whale.state == "hunt") and 1.3 or 0.6
+        local forwardX = math.cos(currentAngle)
+        local forwardY = math.sin(currentAngle)
+        whale.body:applyForce(forwardX * thrust * alignment * multiplier,
+                              forwardY * thrust * alignment * multiplier)
+    else
+        local vx, vy = whale.body:getLinearVelocity()
+        whale.body:applyForce(-vx * 0.3, -vy * 0.3)
+    end
+end
+
+function Whale.draw(debugMode)
+    for _, w in ipairs(Whale.whales) do
+        if w.body and not w.body:isDestroyed() then
+            local x, y = w.body:getPosition()
+            local angle = w.body:getAngle()
+            local data = w.data
+            
+            love.graphics.push()
+            love.graphics.translate(x, y)
+            love.graphics.rotate(angle)
+            
+            -- Keep the whale perfectly upright when steering left by flipping the Y-axis.
+            if math.cos(angle) < 0 then
+                love.graphics.scale(1, -1)
+            end
+            
+            local hw, hh = data.w/2, data.h/2
+            if w.damageFlash > 0 then love.graphics.setColor(1, 0.4, 0.4) else love.graphics.setColor(data.color) end
+
+            -- Tail (Fluke)
+            love.graphics.push()
+            love.graphics.translate(-hw + 5, 0)
+            love.graphics.rotate(w.tailAngle)
+            love.graphics.polygon("fill", 0, -hh*0.4, -data.tailSize*0.8, -hh*0.15, -data.tailSize*0.8, hh*0.15, 0, hh*0.4)
+            love.graphics.polygon("fill", -data.tailSize*0.6, 0, -data.tailSize*1.5, -hh*1.2, -data.tailSize*1.2, 0, -data.tailSize*1.5, hh*1.2)
+            love.graphics.pop()
+            
+            -- Back Pectoral
+            love.graphics.setColor(data.color[1]*0.6, data.color[2]*0.6, data.color[3]*0.6)
+            love.graphics.polygon("fill", hw*0.3, 0, 0, hh*1.5, hw*0.1, 0)
+
+            -- Body
+            if w.damageFlash > 0 then love.graphics.setColor(1, 0.4, 0.4) else love.graphics.setColor(data.color) end
+            local bodyPoly = {}
+            local segments = 10
+            for i = 0, segments do
+                local t = i/segments
+                table.insert(bodyPoly, hw - (t*data.w))
+                table.insert(bodyPoly, -hh * math.sin(t*math.pi) * (1-t*0.3))
+            end
+            for i = segments, 0, -1 do
+                local t = i/segments
+                table.insert(bodyPoly, hw - (t*data.w))
+                table.insert(bodyPoly, hh * math.sin(t*math.pi) * (1-t*0.5))
+            end
+            love.graphics.polygon("fill", bodyPoly)
+
+            -- Belly
+            if w.damageFlash <= 0 then
+                love.graphics.setColor(data.bellyColor)
+                local bellyPoly = {}
+                for i = 0, segments do
+                    local t = i/segments
+                    table.insert(bellyPoly, hw - (t*data.w))
+                    table.insert(bellyPoly, hh * math.sin(t*math.pi) * (1-t*0.5))
+                end
+                for i = segments, 0, -1 do
+                    local t = i/segments
+                    table.insert(bellyPoly, hw - (t*data.w))
+                    table.insert(bellyPoly, hh * 0.2 * math.sin(t*math.pi))
+                end
+                love.graphics.polygon("fill", bellyPoly)
+            end
+
+            -- Dorsal & Front Pectoral
+            love.graphics.setColor(data.color)
+            love.graphics.polygon("fill", -hw*0.1, -hh*0.9, -hw*0.3-data.dorsalSize, -hh-data.dorsalSize, -hw*0.4, -hh*0.8)
+            love.graphics.polygon("fill", hw*0.4, 0, hw*0.1, hh*1.8, hw*0.2, 0)
+
+            -- Eye
+            love.graphics.setColor(0, 0, 0)
+            love.graphics.circle("fill", hw*0.75, -hh*0.2, 2)
+            
+            love.graphics.pop()
+
+            if debugMode then
+                love.graphics.setColor(1, 1, 1)
+                local timerText = ""
+                if w.stateTimer ~= nil then
+                    timerText = string.format(" (%.1fs)", w.stateTimer)
+                else
+                    timerText = " (∞)"
+                end
+                love.graphics.print(w.state .. timerText, x - 30, y - hh - 20)
+                
+                if w.path and #w.path > 0 then
+                    love.graphics.setColor(1, 1, 0, 0.6)
+                    local prevX, prevY = x, y
+                    for i = w.pathIndex, #w.path do
+                        local pt = w.path[i]
+                        love.graphics.line(prevX, prevY, pt.x, pt.y)
+                        love.graphics.circle("fill", pt.x, pt.y, 4)
+                        prevX, prevY = pt.x, pt.y
+                    end
+                end
+                
+                local pct = w.health / w.maxHealth
+                love.graphics.setColor(1, 0, 0)
+                love.graphics.rectangle("fill", x - 25, y - hh - 10, 50, 4)
+                love.graphics.setColor(0, 1, 0)
+                love.graphics.rectangle("fill", x - 25, y - hh - 10, 50 * pct, 4)
             end
         end
     end
-    
-    -- 1. Calculate desired angle
-    local dx = whale.targetX - wx
-    local dy = whale.targetY - wy
-    local desiredAngle = math.atan2(dy, dx)
-    local currentAngle = whale.body:getAngle()
-    
-    -- Normalize angle difference to -PI to PI
-    local angleDiff = (desiredAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
-    
-    -- 2. Apply Torque to rotate smoothly towards target (Fish steering)
-    local turnSpeed = whale.data.turnSpeed * whale.body:getMass()
-    whale.body:applyTorque(angleDiff * turnSpeed)
-    
-    -- 3. Apply forward Thrust in the direction it is currently facing
-    local facingX = math.cos(currentAngle)
-    local facingY = math.sin(currentAngle)
-    local thrust = whale.data.speed * whale.body:getMass()
-    
-    -- If hunting, move faster. If facing away from target, move slower.
-    local alignment = math.max(0, math.cos(angleDiff))
-    local multiplier = (whale.state == "hunt") and 1.5 or 0.8
-    
-    whale.body:applyForce(facingX * thrust * alignment * multiplier, facingY * thrust * alignment * multiplier)
 end
 
-function Whale.damage(whale, amount, source)
+function Whale.damage(whale, amount)
     if not whale or not whale.body or whale.body:isDestroyed() then return end
-    
     whale.health = whale.health - amount
     whale.damageFlash = 0.3
-    
-    local wx, wy = whale.body:getPosition()
-    local EffectsSystem = require("effects")
-    
-    for i = 1, 8 do
-        EffectsSystem.createParticle(wx, wy, 
-            love.math.random(-50, 50), love.math.random(-30, 30), 
-            20, 200, 3, "orangeSpark")
-    end
-    
-    if whale.health <= 0 then
-        Whale.destroy(whale)
-    end
+    if whale.health <= 0 then Whale.destroy(whale) end
 end
 
 function Whale.destroy(whale)
@@ -262,191 +601,24 @@ function Whale.destroy(whale)
     RopeSystem.destroyAllForObject(whale)
     
     local wx, wy = whale.body:getPosition()
-    local EffectsSystem = require("effects")
-    local Water = require("water")
-    
-    for i = 1, 30 do
-        EffectsSystem.createParticle(wx, wy, 
-            love.math.random(-80, 80), love.math.random(-80, 80), 
-            30, 250, 4, "orangeSpark")
-        EffectsSystem.createParticle(wx, wy, 
-            love.math.random(-40, 40), love.math.random(-60, 20), 
-            40, 200, 5, "smoke")
-    end
-    
-    Water.createSplash(wx, wy, 250)
+    require("water").createSplash(wx, wy, 200)
     whale.body:destroy()
     
-    for i, w in ipairs(Whale.whales) do
-        if w == whale then
-            table.remove(Whale.whales, i)
-            break
-        end
+    for i, w in ipairs(Whale.whales) do 
+        if w == whale then 
+            table.remove(Whale.whales, i) 
+            break 
+        end 
     end
 end
 
--- Procedural Rendering
-function Whale.draw(debugMode)
-    for _, w in ipairs(Whale.whales) do
-        if w.body and not w.body:isDestroyed() then
-            local x, y = w.body:getPosition()
-            local angle = w.body:getAngle()
-            local data = w.data
-            
-            -- Damage Flash
-            if w.damageFlash > 0 then
-                love.graphics.setColor(1, 0.3, 0.3, 1)
-            else
-                love.graphics.setColor(data.color)
-            end
-            
-            love.graphics.push()
-            love.graphics.translate(x, y)
-            love.graphics.rotate(angle)
-            
-            local hw, hh = data.w/2, data.h/2
-            
-            -- 1. Draw Tail (Fluke)
-            love.graphics.push()
-            love.graphics.translate(-hw + 5, 0) -- Hinge at the back
-            love.graphics.rotate(w.tailAngle)
-            
-            -- Tail connecting peduncle
-            love.graphics.polygon("fill", 
-                0, -hh * 0.4, 
-                -data.tailSize * 0.8, -hh * 0.15, 
-                -data.tailSize * 0.8, hh * 0.15, 
-                0, hh * 0.4)
-                
-            -- Tail fins
-            love.graphics.polygon("fill", 
-                -data.tailSize * 0.6, 0,
-                -data.tailSize * 1.5, -hh * 1.2,
-                -data.tailSize * 1.2, 0,
-                -data.tailSize * 1.5, hh * 1.2)
-            love.graphics.pop()
-            
-            -- 2. Draw Pectoral Fin (Background)
-            love.graphics.setColor(data.color[1]*0.7, data.color[2]*0.7, data.color[3]*0.7)
-            love.graphics.polygon("fill", 
-                hw * 0.3, 0,
-                0, hh * 1.5,
-                hw * 0.1, 0)
-                
-            -- Reset color for main body
-            if w.damageFlash > 0 then
-                love.graphics.setColor(1, 0.3, 0.3, 1)
-            else
-                love.graphics.setColor(data.color)
-            end
-
-            -- 3. Draw Main Body (Sleek aerodynamic profile)
-            -- We build a dynamic polygon to make a streamlined whale shape
-            local segments = 12
-            local bodyPoly = {}
-            for i = 0, segments do
-                local t = i / segments
-                local px = hw - (t * data.w)
-                -- Curve formula for top of the whale
-                local py = -hh * math.sin(t * math.pi) * (1.0 - t * 0.3)
-                table.insert(bodyPoly, px)
-                table.insert(bodyPoly, py)
-            end
-            for i = segments, 0, -1 do
-                local t = i / segments
-                local px = hw - (t * data.w)
-                -- Curve formula for the bottom (belly is slightly flatter or rounder depending on type)
-                local py = hh * math.sin(t * math.pi) * (1.0 - t * 0.5)
-                table.insert(bodyPoly, px)
-                table.insert(bodyPoly, py)
-            end
-            love.graphics.polygon("fill", bodyPoly)
-            
-            -- 4. Draw Belly Color (Underbelly)
-            if not (w.damageFlash > 0) then
-                love.graphics.setColor(data.bellyColor)
-                local bellyPoly = {}
-                for i = 0, segments do
-                    local t = i / segments
-                    local px = hw - (t * data.w)
-                    local py = hh * math.sin(t * math.pi) * (1.0 - t * 0.5)
-                    table.insert(bellyPoly, px)
-                    table.insert(bellyPoly, py)
-                end
-                -- Close the belly polygon
-                for i = segments, 0, -1 do
-                    local t = i / segments
-                    local px = hw - (t * data.w)
-                    local py = hh * 0.2 * math.sin(t * math.pi) -- Line across the middle
-                    table.insert(bellyPoly, px)
-                    table.insert(bellyPoly, py)
-                end
-                love.graphics.polygon("fill", bellyPoly)
-            end
-            
-            -- 5. Species Specific Markings (Orca eye patch)
-            if w.whaleType == "aggressive" and not (w.damageFlash > 0) then
-                love.graphics.setColor(1, 1, 1, 1) -- White patch
-                love.graphics.ellipse("fill", hw * 0.5, -hh * 0.3, hw * 0.15, hh * 0.2)
-            end
-
-            -- 6. Draw Dorsal Fin
-            if not (w.damageFlash > 0) then love.graphics.setColor(data.color) end
-            love.graphics.polygon("fill", 
-                -hw * 0.1, -hh * 0.9,
-                -hw * 0.3 - data.dorsalSize, -hh - data.dorsalSize,
-                -hw * 0.4, -hh * 0.8)
-
-            -- 7. Draw Pectoral Fin (Foreground)
-            love.graphics.polygon("fill", 
-                hw * 0.4, 0,
-                hw * 0.1, hh * 1.8,
-                hw * 0.2, 0)
-                
-            -- 8. Draw Eye
-            love.graphics.setColor(0, 0, 0, 1)
-            love.graphics.circle("fill", hw * 0.75, -hh * 0.2, 2)
-            if w.whaleType == "aggressive" then
-                -- Angry red pupil for killer whales
-                love.graphics.setColor(1, 0, 0, 1)
-                love.graphics.circle("fill", hw * 0.75 + 0.5, -hh * 0.2, 1)
-            end
-            
-            love.graphics.pop()
-            
-            -- Debug UI
-            if debugMode then
-                love.graphics.setColor(0, 1, 0)
-                love.graphics.circle("line", w.targetX, w.targetY, 5)
-                love.graphics.line(x, y, w.targetX, w.targetY)
-                
-                love.graphics.setColor(1, 1, 1)
-                love.graphics.print(w.state, x - 20, y - hh - 20)
-                
-                -- Health bar
-                local pct = w.health / w.maxHealth
-                love.graphics.setColor(1, 0, 0)
-                love.graphics.rectangle("fill", x - 25, y - hh - 10, 50, 4)
-                love.graphics.setColor(0, 1, 0)
-                love.graphics.rectangle("fill", x - 25, y - hh - 10, 50 * pct, 4)
-            end
-        end
-    end
-    love.graphics.setColor(1, 1, 1, 1)
+function Whale.clear()
+    for _, w in ipairs(Whale.whales) do if w.body then w.body:destroy() end end
+    Whale.whales = {}
 end
 
 function Whale.getAll()
     return Whale.whales
-end
-
-function Whale.clear()
-    for _, w in ipairs(Whale.whales) do
-        if w.body and not w.body:isDestroyed() then
-            w.body:destroy()
-        end
-    end
-    Whale.whales = {}
-    Whale.nextId = 1
 end
 
 return Whale

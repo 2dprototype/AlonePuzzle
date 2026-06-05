@@ -70,14 +70,16 @@ function love.load()
     WorldManager.createBoundary(-1785, 1005, 210, 10, 0)
     
     -- Create water areas
-    -- Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
+    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
     -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
     -- Water.createArea(0, 500, 300, 100, 0.8, 0.7)       -- Sinking water (danger)
     
     -- Create whales in water areas
-    -- Whale.create(-1850, 900, "gentle", 45, 28)    -- Gentle whale
-    Water.createArea(-1600, 650, 400, 250, 1.2, 0.9)   -- Floating water
-    Whale.create(-1500, 650, "gentle", 30, 18)       -- Baby whale
+    Whale.create(-1550, 300, "gentle", 45, 28)   
+    
+    Water.createArea(-1800, 500, 1500, 550, 1.2, 0.9)   -- Floating water
+    Whale.create(-1500, 650, "aggressive", 30, 18)       
+    Whale.create(-1500, 350, "baby", 30, 18)       
     
     WorldManager.updateSpatialGrid(Entities.list)
     
@@ -138,18 +140,17 @@ function love.draw()
 end
 
 function love.mousepressed(x, y, button, istouch)
-    -- Convert screen coordinates to world coordinates
     local worldX, worldY = Camera:screenToWorld(x, y)
     
     if button == 1 then -- Left click: grab object
         local player = Entities.player
         if not player or #(player.ropeIds or {}) >= 2 then return end
         
-        -- Find nearest entity to mouse cursor
-        local closest, minDist = nil, Config.enemy.grabRadius * 2 -- larger radius for mouse
+        local closest, minDist = nil, Config.enemy.grabRadius * 2
+        
+        -- Check regular entities
         for _, e in ipairs(Entities.list) do
             if e.body and not e.body:isDestroyed() and e ~= player then
-                -- Check if not already connected via rope
                 if not RopeSystem.connects(player, e) then
                     local ex, ey = e.body:getPosition()
                     local dx, dy = worldX - ex, worldY - ey
@@ -157,6 +158,24 @@ function love.mousepressed(x, y, button, istouch)
                     if dist < minDist then
                         minDist = dist
                         closest = e
+                    end
+                end
+            end
+        end
+        
+        -- Also check whales!
+        local whales = Whale.getAll()
+        for _, w in ipairs(whales) do
+            if w.body and not w.body:isDestroyed() then
+                if not RopeSystem.connects(player, w) then
+                    local wx, wy = w.body:getPosition()
+                    local dx, dy = worldX - wx, worldY - wy
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    -- Use whale's size for threshold
+                    local threshold = w.data.w / 2 + 20
+                    if dist < minDist and dist < threshold then
+                        minDist = dist
+                        closest = w
                     end
                 end
             end

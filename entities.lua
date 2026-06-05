@@ -126,7 +126,19 @@ function Entities.update(dt)
             p.thrusterCooldown = 0.02
         end
         thrusting = true
+    end    
+    
+    if love.keyboard.isDown("l") then 
+        p.body:applyForce(0, pCfg.moveForceYUp*5)
+        if p.thrusterCooldown <= 0 then
+            for i = 1, 3 do
+                EffectsSystem.createParticle(bx, by + 10, love.math.random(-30, 30), -40 - love.math.random(0, 30), 30, 200, 0.5 + love.math.random(), "thruster")
+            end
+            p.thrusterCooldown = 0.05
+        end
+        thrusting = true
     end
+    
     if love.keyboard.isDown("down") then 
         p.body:applyForce(0, pCfg.moveForceYDown)
         if p.thrusterCooldown <= 0 then
