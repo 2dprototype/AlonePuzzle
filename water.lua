@@ -11,14 +11,15 @@ local bubbleBuffer = {}
 local causticBuffer = {}
 
 -- Create a water area
-function Water.createArea(x, y, width, height, density, viscousDrag)
+function Water.createArea(x, y, width, height, density, viscousDrag, waterType)
     local area = {
         x = x, y = y, w = width, h = height,
         density = density or 0.5,      -- Buoyancy strength (0-1)
         viscousDrag = viscousDrag or 0.8, -- Water resistance
         surfaceY = y,                   -- Water surface Y coordinate
         type = "water",
-        mesh = nil,                     -- Dynamically allocated once on first draw
+        waterType = waterType or "basic", -- "basic" or "deep"
+        mesh = nil,                     -- Dynamically allocated once on first draw (for deep water)
         verticesTable = nil,
         meshSegments = 0
     }
@@ -150,157 +151,232 @@ function Water.createSplash(x, y, intensity)
     end
 end
 
--- Draw water areas
-function Water.draw()
+-- Basic water rendering (from water_basic.lua)
+function Water.draw_basic(area)
     local time = love.timer.getTime()
+    local steps = math.max(15, math.floor(area.w / 20))
+    local stepSize = area.w / steps
     
-    -- Fast clear reuse arrays without triggering Garbage Collection allocations
+    -- Draw the dynamic water body as vertical trapezoids
+    love.graphics.setColor(0.2, 0.4, 0.8, 0.55)
+    
+    for i = 0, steps - 1 do
+        local x1 = area.x + i * stepSize
+        local x2 = area.x + (i + 1) * stepSize
+        
+        -- Combine two sine waves for natural wave effect
+        local waveY1 = area.y + math.sin(time * 3 + i * 0.4) * 3 + math.sin(time * 1.5 + i * 0.2) * 2
+        local waveY2 = area.y + math.sin(time * 3 + (i + 1) * 0.4) * 3 + math.sin(time * 1.5 + (i + 1) * 0.2) * 2
+        
+        -- Draw trapezoid for this segment
+        love.graphics.polygon("fill", 
+            x1, waveY1,
+            x2, waveY2,
+            x2, area.y + area.h,
+            x1, area.y + area.h
+        )
+    end
+    
+    -- Draw surface highlight line
+    love.graphics.setColor(0.4, 0.7, 1.0, 0.7)
+    love.graphics.setLineWidth(2)
+    
+    for i = 0, steps - 1 do
+        local x1 = area.x + i * stepSize
+        local x2 = area.x + (i + 1) * stepSize
+        
+        local waveY1 = area.y + math.sin(time * 3 + i * 0.4) * 3 + math.sin(time * 1.5 + i * 0.2) * 2
+        local waveY2 = area.y + math.sin(time * 3 + (i + 1) * 0.4) * 3 + math.sin(time * 1.5 + (i + 1) * 0.2) * 2
+        
+        love.graphics.line(x1, waveY1, x2, waveY2)
+    end
+    
+    -- Add bubbles/caustics
+    love.graphics.setColor(0.6, 0.8, 1.0, 0.15)
+    for i = 1, 20 do
+        local fx = area.x + ((time * 20 + i * 37) % area.w)
+        local fy = area.y + 10 + math.sin(time * 5 + i) * 8
+        
+        if fy < area.y + area.h - 5 then
+            love.graphics.circle("fill", fx, fy, 3)
+        end
+    end
+end
+
+-- Deep water rendering (enhanced with mesh, god rays, caustics, etc.)
+function Water.draw_deep(area)
+    local time = love.timer.getTime()
+    local steps = math.max(15, math.floor(area.w / 12))
+    local stepSize = area.w / steps
+    
+    -- Clear buffers
     for i = 1, #lineBuffer do lineBuffer[i] = nil end
     for i = 1, #sparkleBuffer do sparkleBuffer[i] = nil end
     for i = 1, #bubbleBuffer do bubbleBuffer[i] = nil end
-    for i = 1, #causticBuffer do causticBuffer[i] = nil end
     
-    for _, area in ipairs(Water.areas) do
-        local steps = math.max(15, math.floor(area.w / 12)) -- Higher fidelity steps
-        local stepSize = area.w / steps
-        
-        -- Initialize or update dynamic Mesh layout if sizes changed
-        if not area.mesh or area.meshSegments ~= steps then
-            area.meshSegments = steps
-            area.verticesTable = {}
-            for i = 0, steps do
-                table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1}) -- Top Vertex structural anchor
-                table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1}) -- Bottom Vertex structural anchor
-            end
-            area.mesh = love.graphics.newMesh(area.verticesTable, "strip", "dynamic")
-        end
-        
-        -- 1. LAYER ONE: UNDERWATER GOD RAYS (Rendered underneath water colors)
-        -- love.graphics.setBlendMode("add")
-        -- for r = 1, 3 do
-            -- local angleOffset = math.sin(time * 0.4 + r) * 35
-            -- local startX = area.x + (area.w * 0.23) * r
-            -- love.graphics.setColor(0.5, 0.75, 1.0, 0.04) -- Subtle light glow
-            -- love.graphics.polygon("fill", 
-                -- startX, area.y,
-                -- startX + 50, area.y,
-                -- startX + 50 + angleOffset + 60, area.y + area.h,
-                -- startX + angleOffset, area.y + area.h
-            -- )
-        -- end
-        -- love.graphics.setBlendMode("alpha")
-        
-        -- 2. LAYER TWO: GRADIENT WATER BODY POLYGON (Dynamic Mesh processing)
-        local idx = 1
-        local lineIdx = 1
-        
+    -- Initialize or update dynamic Mesh
+    if not area.mesh or area.meshSegments ~= steps then
+        area.meshSegments = steps
+        area.verticesTable = {}
         for i = 0, steps do
-            local x = area.x + i * stepSize
-            -- Compound math wave formulation for smooth natural movement
-            local waveY = area.y + math.sin(time * 2.8 + i * 0.28) * 4.5 + math.cos(time * 1.4 + i * 0.12) * 2.0
-            
-            -- Keep record of surface track points for line draw pipelines
-            lineBuffer[lineIdx] = x
-            lineBuffer[lineIdx + 1] = waveY
-            lineIdx = lineIdx + 2
-            
-            -- Handle Sparkle gathering positions (Only near high points dynamically blinking)
-            if i > 0 and i < steps and math.sin(time * 5 + i * 2) > 0.82 then
-                table.insert(sparkleBuffer, x)
-                table.insert(sparkleBuffer, waveY + 1)
-            end
-            
-            -- Vertex Group Array Modifications
-            -- Top Node Position: Mid-water gradient accent
-            area.verticesTable[idx][1] = x
-            area.verticesTable[idx][2] = waveY
-            area.verticesTable[idx][5] = 0.15  -- R
-            area.verticesTable[idx][6] = 0.42  -- G
-            area.verticesTable[idx][7] = 0.78  -- B
-            area.verticesTable[idx][8] = 0.65  -- Alpha mid-depth transparency
-            idx = idx + 1
-            
-            -- Bottom Node Position: Deep water structural base
-            area.verticesTable[idx][1] = x
-            area.verticesTable[idx][2] = area.y + area.h
-            area.verticesTable[idx][5] = 0.04  -- R
-            area.verticesTable[idx][6] = 0.12  -- G
-            area.verticesTable[idx][8] = 0.92  -- Deep ocean opacity shift
-            idx = idx + 1
+            table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1})
+            table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1})
+        end
+        area.mesh = love.graphics.newMesh(area.verticesTable, "strip", "dynamic")
+    end
+    
+    -- Update mesh vertices
+    local idx = 1
+    local lineIdx = 1
+    
+    for i = 0, steps do
+        local x = area.x + i * stepSize
+        local waveY = area.y + math.sin(time * 2.8 + i * 0.28) * 4.5 + math.cos(time * 1.4 + i * 0.12) * 2.0
+        
+        -- Store surface points for line drawing
+        lineBuffer[lineIdx] = x
+        lineBuffer[lineIdx + 1] = waveY
+        lineIdx = lineIdx + 2
+        
+        -- Sparkle positions
+        if i > 0 and i < steps and math.sin(time * 5 + i * 2) > 0.82 then
+            table.insert(sparkleBuffer, x)
+            table.insert(sparkleBuffer, waveY + 1)
         end
         
-        -- Direct single hardware push instructions
-        area.mesh:setVertices(area.verticesTable)
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(area.mesh)
+        -- Top vertex
+        area.verticesTable[idx][1] = x
+        area.verticesTable[idx][2] = waveY
+        area.verticesTable[idx][5] = 0.15
+        area.verticesTable[idx][6] = 0.42
+        area.verticesTable[idx][7] = 0.78
+        area.verticesTable[idx][8] = 0.65
+        idx = idx + 1
         
-        -- 3. LAYER THREE: LIGHT CAUSTICS NETWORK
-        -- love.graphics.setBlendMode("add")
-        -- love.graphics.setColor(1, 1, 1, 0.03)
-        -- for c = 1, 2 do
-            -- local baseCausticY = area.y + 25 + (c * 40)
-            -- if baseCausticY < area.y + area.h - 10 then
-                -- local cLineIdx = 1
-                -- for i = 0, steps do
-                    -- local cx = area.x + i * stepSize
-                    -- local cy = baseCausticY + math.sin(time * 3.5 + i * 0.5 + c) * 3
-                    -- causticBuffer[cLineIdx] = cx
-                    -- causticBuffer[cLineIdx + 1] = cy
-                    -- cLineIdx = cLineIdx + 2
-                -- end
-                -- love.graphics.setLineWidth(2)
-                -- love.graphics.line(causticBuffer)
-                -- -- Clear immediate sub-buffer array index tracking safely
-                -- for k = 1, #causticBuffer do causticBuffer[k] = nil end
-            -- end
+        -- Bottom vertex
+        area.verticesTable[idx][1] = x
+        area.verticesTable[idx][2] = area.y + area.h
+        area.verticesTable[idx][5] = 0.04
+        area.verticesTable[idx][6] = 0.12
+        area.verticesTable[idx][8] = 0.92
+        idx = idx + 1
+    end
+    
+    -- Draw mesh
+    area.mesh:setVertices(area.verticesTable)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(area.mesh)
+    
+    -- Draw bubbles
+    -- local maxBubbles = 25
+    -- for i = 1, maxBubbles do
+        -- local bx = area.x + ((i * 143.7 + time * 14) % area.w)
+        -- local by = area.y + area.h - ((i * 87.3 + time * (18 + (i % 4) * 6)) % area.h)
+        -- bx = bx + math.sin(time * 2.5 + i) * 5
+        
+        -- if by > area.y + 12 and by < area.y + area.h then
+            -- table.insert(bubbleBuffer, bx)
+            -- table.insert(bubbleBuffer, by)
         -- end
-        -- love.graphics.setBlendMode("alpha")
+    -- end
+    
+    if #bubbleBuffer > 0 then
+        love.graphics.setPointSize(2)
+        love.graphics.setColor(0.85, 0.95, 1.0, 0.3)
+        love.graphics.points(bubbleBuffer)
+    end
+    
+    -- Draw surface highlights
+    -- if #lineBuffer >= 4 then
+        -- love.graphics.setColor(0.48, 0.78, 1.0, 0.75)
+        -- love.graphics.setLineWidth(3)
+        -- love.graphics.line(lineBuffer)
         
-        -- 4. LAYER FOUR: RISING BUBBLES BATCH PROCESSING
-        -- local maxBubbles = 25
-        -- for i = 1, maxBubbles do
-            -- -- Pseudo-random deterministic placement calculations using continuous math sequences
-            -- local bx = area.x + ((i * 143.7 + time * 14) % area.w)
-            -- local by = area.y + area.h - ((i * 87.3 + time * (18 + (i % 4) * 6)) % area.h)
-            -- bx = bx + math.sin(time * 2.5 + i) * 5 -- Sub-surface drift oscillation
-            
-            -- if by > area.y + 12 and by < area.y + area.h then
-                -- table.insert(bubbleBuffer, bx)
-                -- table.insert(bubbleBuffer, by)
-            -- end
-        -- end
-        -- if #bubbleBuffer > 0 then
-            -- love.graphics.setPointSize(2)
-            -- love.graphics.setColor(0.85, 0.95, 1.0, 0.3)
-            -- love.graphics.points(bubbleBuffer)
-        -- end
+        -- love.graphics.setColor(0.2, 1.0, 0.95, 0.85)
+        -- love.graphics.setLineWidth(1)
+        -- love.graphics.line(lineBuffer)
+    -- end
+end
+
+function Water.draw_algae(area)
+    local t = love.timer.getTime()
+    
+    -- 1. Base deep murky green body
+    love.graphics.setColor(0.05, 0.25, 0.15, 0.85)
+    love.graphics.rectangle("fill", area.x, area.y + 5, area.w, area.h - 5)
+    
+    -- 2. Bright, wavy algae "scum" on the surface
+    love.graphics.setColor(0.25, 0.65, 0.2, 0.9)
+    local segments = math.floor(area.w / 15)
+    local surfacePoly = {area.x, area.y + area.h, area.x + area.w, area.y + area.h}
+    
+    for i = segments, 0, -1 do
+        local px = area.x + (i / segments) * area.w
+        -- Organic overlapping sine waves for a swampy look
+        local wave = math.sin(t * 1.5 + px * 0.04) * 4 + math.cos(t * 1.2 + px * 0.02) * 2
+        table.insert(surfacePoly, px)
+        table.insert(surfacePoly, area.y + wave)
+    end
+    
+    if #surfacePoly >= 6 then
+        love.graphics.polygon("fill", surfacePoly)
+    end
+    
+    -- 3. Top highlight (bright green edge)
+    love.graphics.setColor(0.4, 0.8, 0.3, 1)
+    love.graphics.setLineWidth(2)
+    for i = 5, #surfacePoly - 2, 2 do
+        love.graphics.line(surfacePoly[i], surfacePoly[i+1], surfacePoly[i-2], surfacePoly[i-1])
+    end
+    
+    -- 4. Suspended drifting algae clumps
+    love.graphics.setColor(0.3, 0.6, 0.25, 0.6)
+    -- Calculate how many clumps based on area size
+    local numParticles = math.floor((area.w * area.h) / 2500) 
+    
+    for i = 1, numParticles do
+        -- Use pseudo-random math based on area position so they don't flicker
+        local pseudoX = (area.x * 13 + i * 117) % area.w
+        local pseudoY = (area.y * 7 + i * 233) % (area.h - 15) + 15
         
-        -- 5. LAYER FIVE: SURFACE HIGHLIGHTS & CYAN CREST LINES
-        -- if #lineBuffer >= 4 then
-            -- -- Surface Base Highlight (Thick Light Blue Line)
-            -- love.graphics.setColor(0.48, 0.78, 1.0, 0.75)
-            -- love.graphics.setLineWidth(3)
-            -- love.graphics.line(lineBuffer)
-            
-            -- -- High Contrast Wave Crest Accent (Thin Cyan Line Overlay)
-            -- love.graphics.setColor(0.2, 1.0, 0.95, 0.85)
-            -- love.graphics.setLineWidth(1)
-            -- love.graphics.line(lineBuffer)
-        -- end
+        -- Make them gently drift in circles using time
+        local driftX = math.sin(t * 0.5 + pseudoY * 0.1) * 8
+        local driftY = math.cos(t * 0.3 + pseudoX * 0.1) * 5
         
+        local px = area.x + pseudoX + driftX
+        local py = area.y + pseudoY + driftY
         
-        -- 6. LAYER EIGHT: SYSTEM DEBUG DATA
+        -- Keep them visually constrained to the water boundaries horizontally
+        if px > area.x and px < area.x + area.w then
+            local radius = (i % 3) + 1.5 -- Varying clump sizes
+            love.graphics.circle("fill", px, py, radius)
+        end
+    end
+end
+
+-- Main draw function - routes to appropriate renderer based on waterType
+function Water.draw()
+    for _, area in ipairs(Water.areas) do
+        if area.waterType == "basic" then
+            Water.draw_basic(area)
+        elseif area.waterType == "algae" then
+            Water.draw_algae(area) -- NEW: Route to algae rendering
+        else -- "deep" or default
+            Water.draw_deep(area)
+        end
+        
+        -- Debug overlay (applies to all types)
         if Water.debugMode then
             love.graphics.setColor(0, 0.5, 1, 1)
             love.graphics.setLineWidth(1)
             love.graphics.rectangle("line", area.x, area.y, area.w, area.h)
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.print(string.format("Density: %.1f, Drag: %.1f, Vertices: %d", 
-                area.density, area.viscousDrag, steps * 2), area.x + 5, area.y - 15)
+            love.graphics.print(string.format("Type: %s, Density: %.1f, Drag: %.1f", 
+                area.waterType, area.density, area.viscousDrag), area.x + 5, area.y - 15)
         end
     end
     
-    -- Global Environment State Normalization Reset
+    -- Reset graphics state
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setLineWidth(1)
     love.graphics.setPointSize(1)

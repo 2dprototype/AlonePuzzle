@@ -37,7 +37,7 @@ function Entities.createPlayer(x, y)
     return Entities.player
 end
 
-function Entities.createBox(x, y, w, h, angle, density, friction, label)
+function Entities.createBox(x, y, w, h, angle, density, friction, label, Hp)
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
     local shape = love.physics.newRectangleShape(w, h)
     local fixture = love.physics.newFixture(body, shape, density or 1.0)
@@ -45,7 +45,7 @@ function Entities.createBox(x, y, w, h, angle, density, friction, label)
     fixture:setRestitution(0.2)
     body:setAngle(angle or 0)
     
-    local maxHp = math.max(10, math.floor((w * h * (density or 1.0)) / 4))
+    local maxHp = Hp or 100
     local box = {
         type = "box", body = body, shape = shape, fixture = fixture,
         w = w, h = h, label = label or "Box", health = maxHp, maxHealth = maxHp,
@@ -250,6 +250,99 @@ function Entities.destroy(e)
         EffectsSystem.createDamageEffect(ex - 15, ey, ex + 15, ey)
     end
     e.body:destroy()
+end
+
+function Entities.mergeBoxesTouchingPlayer(player)
+    if not player or not player.body then return end
+
+    -- Find all boxes in contact with the player
+    local contacts = WorldManager.world:getContacts()
+    local boxesToMerge = {}
+    local seen = {}
+
+    for _, contact in ipairs(contacts) do
+        if contact:isEnabled() then
+            local fa, fb = contact:getFixtures()
+            if fa and fb then
+                local bodyA = fa:getBody()
+                local bodyB = fb:getBody()
+                local isPlayerA = (bodyA == player.body)
+                local isPlayerB = (bodyB == player.body)
+                if isPlayerA or isPlayerB then
+                    local otherBody = isPlayerA and bodyB or bodyA
+                    -- Find the entity from the body
+                    for _, ent in ipairs(Entities.list) do
+                        if ent.body == otherBody and ent.type == "box" and not seen[ent] then
+                            table.insert(boxesToMerge, ent)
+                            seen[ent] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #boxesToMerge == 0 then return end
+
+    -- Compute total area, total health, area‑weighted centroid, sum of widths & heights
+    local totalArea = 0
+    local totalHealth = 0
+    local weightedX, weightedY = 0, 0
+    local sumWidth = 0
+    local sumHeight = 0
+    local count = 0
+
+    for _, box in ipairs(boxesToMerge) do
+        local area = box.w * box.h
+        totalArea = totalArea + area
+        totalHealth = totalHealth + box.health
+        local x, y = box.body:getPosition()
+        weightedX = weightedX + x * area
+        weightedY = weightedY + y * area
+        sumWidth = sumWidth + box.w
+        sumHeight = sumHeight + box.h
+        count = count + 1
+    end
+
+    if count == 0 then return end
+
+    local centroidX = weightedX / totalArea
+    local centroidY = weightedY / totalArea
+
+    -- Determine new dimensions preserving average aspect ratio
+    local avgAspect = (sumWidth / count) / (sumHeight / count)
+    local newWidth = math.sqrt(totalArea * avgAspect)
+    local newHeight = math.sqrt(totalArea / avgAspect)
+
+    -- Ensure minimum size
+    newWidth = math.max(5, newWidth)
+    newHeight = math.max(5, newHeight)
+
+    -- Destroy the old boxes and their ropes
+    for _, box in ipairs(boxesToMerge) do
+        RopeSystem.destroyAllForObject(box)
+        box.body:destroy()
+        -- Remove from Entities.list
+        for i, e in ipairs(Entities.list) do
+            if e == box then
+                table.remove(Entities.list, i)
+                break
+            end
+        end
+    end
+
+    -- Create the merged box (dynamic, default density 1.0, friction 0.5)
+    local newBox = Entities.createBox(centroidX, centroidY, newWidth, newHeight, 0, 1.0, 0.5, "Merged")
+    newBox.health = totalHealth
+    newBox.maxHealth = totalHealth
+    newBox.damageFlash = 0
+
+    -- Optional: add a flash effect at the new box location
+    local EffectsSystem = require("effects")
+    EffectsSystem.createDamageEffect(centroidX - newWidth/2, centroidY - newHeight/2,
+                                     centroidX + newWidth/2, centroidY + newHeight/2, true)
+
+    return newBox
 end
 
 function Entities.sliceBox(box)

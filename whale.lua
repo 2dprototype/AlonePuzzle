@@ -11,7 +11,7 @@ local whaleTypes = {
         bellyColor = {0.3, 0.4, 0.6},
         speed = 800,
         turnSpeed = 1.5,
-        mass = 1000,
+        mass = 400,
         health = 500,
         damage = 0,
         friendly = true,
@@ -23,7 +23,7 @@ local whaleTypes = {
         name = "Orca",
         color = {0.05, 0.05, 0.08},
         bellyColor = {0.9, 0.9, 0.95},
-        speed = 1000,
+        speed = 700,
         turnSpeed = 4.0,
         mass = 60,
         health = 250,
@@ -39,7 +39,7 @@ local whaleTypes = {
         bellyColor = {0.4, 0.5, 0.7},
         speed = 300,
         turnSpeed = 2.5,
-        mass = 20,
+        mass = 8,
         health = 100,
         damage = 0,
         friendly = true,
@@ -279,7 +279,7 @@ function Whale.update(dt, player, entities)
         if w.inWater then
             Whale.updateAI(w, dt, player, waterArea)
         else
-            w.body:applyTorque(w.body:getAngularVelocity() * -0.5 * w.body:getMass())
+            -- w.body:applyTorque(w.body:getAngularVelocity() * -0.5 * w.body:getMass())
         end
         
         if player and player.body and not player.body:isDestroyed() and not w.data.friendly then
@@ -341,7 +341,7 @@ function Whale.updateAI(whale, dt, player, waterArea)
         local targetAngle = (math.cos(currentAngle) < 0) and math.pi or 0
         local angleError = (targetAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
         
-        local stabilizerTorque = angleError * whale.body:getMass() * 4
+        local stabilizerTorque = angleError * whale.body:getMass() * 8
         whale.body:applyTorque(stabilizerTorque)
         
         local angVel = whale.body:getAngularVelocity()

@@ -4,6 +4,7 @@ local Config = {
     physics = {
         meter = 64,
         gravityY = 9.81 * 64,
+        -- gravityY = 0,
         linearDamping = 8.0,
         angularDamping = 8.0
     },
@@ -51,7 +52,7 @@ local Config = {
     rope = {
         minSegments = 3,
         maxSegments = 15,
-        segmentDensity = 0.5,
+        segmentDensity = 0.1,
         thickness = 3,
         extraLengthLimit = 2
     },

@@ -21,7 +21,8 @@ function love.load()
     
     -- Instantiate Scene Objects
     -- Entities.createPlayer(-820, 0)
-    Entities.createPlayer(-1655, 986)
+    -- Entities.createPlayer(-1655, 986)
+    Entities.createPlayer(-660, 400)
     
     -- Populating Physical Rigid Props
     Entities.createBox(-800, 570, 8, 80, 0, 2, 0.2)
@@ -33,15 +34,15 @@ function love.load()
     -- Grid Matrix Generator Setup (more boxes)
     for r = 0, 3 do
         for c = 0, 2 do
-            Entities.createBox(-1830 + (c * 30), 830 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r))
+            Entities.createBox(-1600 + (c * 30), 660 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r),10000)
         end
     end
     
     -- Add more boxes to make the map interesting
-    Entities.createBox(-900, 400, 20, 20, 0, 1.5, 0.3, "box1")
-    Entities.createBox(-750, 350, 15, 40, 0.5, 1.2, 0.2, "box2")
-    Entities.createBox(-1000, 600, 25, 25, 0, 2.0, 0.1, "box3")
-    Entities.createBox(-1100, 650, 12, 60, 0.3, 0.8, 0.4, "box4")
+    Entities.createBox(-900, 400, 20, 20, 0, 1.5, 0.3, "box1", 1000)
+    Entities.createBox(-750, 350, 15, 40, 0.5, 1.2, 0.2, "box2", 1000)
+    Entities.createBox(-1000, 600, 25, 25, 0, 2.0, 0.1, "box3",  1000)
+    Entities.createBox(-1100, 650, 12, 60, 0.3, 0.8, 0.4, "box4", 1000)
     
     -- Add more balls
     Entities.createBall(-1590, 1000, 28, 0, 0.1, 0.8)
@@ -69,17 +70,25 @@ function love.load()
     WorldManager.createBoundary(-1885, 905, 10, 200, 0)
     WorldManager.createBoundary(-1785, 1005, 210, 10, 0)
     
+    WorldManager.createBoundary(-1885, 1305, 10, 600, 0)
+    WorldManager.createBoundary(-1485, 1605, 810, 10, 0)
+    WorldManager.createBoundary(-1085, 1305, 10, 600, 0)
+    
     -- Create water areas
-    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9)   -- Floating water
+    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9, "algae") 
+    Water.createArea(-1880, 1050, 790, 550, 1.1, 0.9, "deep") 
+    Whale.create(-1580, 1200, "baby", 45, 28)   
+    Whale.create(-1480, 1300, "gentle", 45, 28)   
+    
+    
     -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
     -- Water.createArea(0, 500, 300, 100, 0.8, 0.7)       -- Sinking water (danger)
     
     -- Create whales in water areas
-    Whale.create(-1550, 300, "gentle", 45, 28)   
     
-    Water.createArea(-1800, 500, 1500, 550, 1.2, 0.9)   -- Floating water
-    Whale.create(-1500, 650, "aggressive", 30, 18)       
-    Whale.create(-1500, 350, "baby", 30, 18)       
+    -- Water.createArea(-1800, 500, 1500, 550, 1.2, 0.9)   -- Floating water
+    -- Whale.create(-1500, 650, "aggressive", 30, 18)       
+    -- Whale.create(-1500, 350, "baby", 30, 18)       
     
     WorldManager.updateSpatialGrid(Entities.list)
     
@@ -242,6 +251,16 @@ function love.keypressed(key)
         end
     elseif key == "e" then
         Entities.grab(true)
+    elseif key == "z" then
+        local player = Entities.player
+        if player then
+            WorldManager.sliceBoundaryAtPlayer(player)
+        end
+    elseif key == "m" then
+        local player = Entities.player
+        if player then
+            Entities.mergeBoxesTouchingPlayer(player)
+        end
     elseif key == "lshift" or key == "rshift" then
         local p = Entities.player
         if p and p.ropeIds and #p.ropeIds == 2 then
