@@ -83,6 +83,7 @@ function Whale.create(x, y, whaleType)
         blowholeTimer = 0,
         
         state = "idle",
+        dead = false,
         stateTimer = love.math.random(2, 5),
         path = {},
         pathIndex = 1,
@@ -149,7 +150,7 @@ function Whale.generateSmartPath(x1, y1, x2, y2, waterArea, whale, depth)
         local dy = y2 - y1
         return math.sqrt(dx*dx + dy*dy)
     end
-	
+    
     if distance(x1, y1, x2, y2) < 0.1 then
         table.insert(path, {x = x2, y = y2})
         return path
@@ -205,7 +206,7 @@ function Whale.generateSmartPath(x1, y1, x2, y2, waterArea, whale, depth)
         waypointRight.y = math.max(waterArea.y + pad, math.min(waterArea.y + waterArea.h - pad, waypointRight.y))
     end
     
-	-- Check Line of Sight (LOS) for immediate viable paths
+    -- Check Line of Sight (LOS) for immediate viable paths
     local function hasClearPath(sx, sy, ex, ey)
         -- 🐛 FIX 2: Protect the secondary LOS raycasts too
         if distance(sx, sy, ex, ey) < 0.1 then return true end
@@ -247,6 +248,9 @@ function Whale.update(dt, player, entities)
     local Water = require("water")
     local EffectsSystem = require("effects")
     
+    -- Unified player status verification
+    local playerValid = player and player.body and not player.body:isDestroyed() and (not player.health or player.health > 0)
+    
     for i = #Whale.whales, 1, -1 do
         local w = Whale.whales[i]
         if not w.body or w.body:isDestroyed() then
@@ -258,9 +262,9 @@ function Whale.update(dt, player, entities)
         
         local wx, wy = w.body:getPosition()
         local vx, vy = w.body:getLinearVelocity()
-        local currentSpeed = math.sqrt(vx^2 + vy^2)
         local waterArea = Water.isPointInWater(wx, wy)
 
+        -- Always apply buoyancy and water drag (dead or alive)
         if waterArea then
             local mass = w.body:getMass()
             local gravity = 9.81 * 64
@@ -270,19 +274,33 @@ function Whale.update(dt, player, entities)
         
         w.inWater = (waterArea ~= nil)
         
-        local wagSpeed = math.max(2, currentSpeed * 0.02)
-        w.animPhase = w.animPhase + (dt * wagSpeed)
-        w.tailAngle = math.sin(w.animPhase) * 0.4
+        -- Only animate if alive
+        if not w.dead then
+            local currentSpeed = math.sqrt(vx^2 + vy^2)
+            local wagSpeed = math.max(2, currentSpeed * 0.02)
+            w.animPhase = w.animPhase + (dt * wagSpeed)
+            w.tailAngle = math.sin(w.animPhase) * 0.4
+        else
+            -- Dead: tail slowly settles
+            w.tailAngle = w.tailAngle * 0.95
+        end
         
         if w.blowholeTimer > 0 then w.blowholeTimer = w.blowholeTimer - dt end
 
-        if w.inWater then
+        if w.inWater and not w.dead then
             Whale.updateAI(w, dt, player, waterArea)
-        else
-            -- w.body:applyTorque(w.body:getAngularVelocity() * -0.5 * w.body:getMass())
+        elseif w.dead then
+            -- No AI, just additional damping to simulate dead body
+            w.body:applyForce(-vx * 0.5, -vy * 0.5)
+            -- Slowly rotate to upright
+            local angle = w.body:getAngle()
+            local targetAngle = (math.cos(angle) < 0) and math.pi or 0
+            local angleDiff = (targetAngle - angle + math.pi) % (2 * math.pi) - math.pi
+            w.body:applyTorque(angleDiff * w.body:getMass() * 2)
         end
         
-        if player and player.body and not player.body:isDestroyed() and not w.data.friendly then
+        -- Attack only if whale is alive, aggressive, and player is valid/alive
+        if not w.dead and playerValid and not w.data.friendly then
             local px, py = player.body:getPosition()
             local dist = math.sqrt((wx-px)^2 + (wy-py)^2)
             if dist < (w.data.w/2 + 20) then
@@ -299,14 +317,23 @@ function Whale.update(dt, player, entities)
 end
 
 function Whale.updateAI(whale, dt, player, waterArea)
+    if whale.dead then return end
+    
     local WorldManager = require("world_manager")
     local Water = require("water")
     local wx, wy = whale.body:getPosition()
-    local px, py = player and player.body and player.body:getPosition() or wx, wy
+    
+    -- Check if player is completely valid and alive
+    local playerValid = player and player.body and not player.body:isDestroyed() and (not player.health or player.health > 0)
+    
+    local px, py = wx, wy
+    if playerValid then
+        px, py = player.body:getPosition()
+    end
     local distToPlayer = math.sqrt((wx-px)^2 + (wy-py)^2)
 
     -- ========== STATE TRANSITIONS ==========
-    if not whale.data.friendly and distToPlayer < 600 then
+    if not whale.data.friendly and playerValid and distToPlayer < 600 then
         if Water.isPointInWater(px, py) then
             if whale.state ~= "hunt" or (whale.stateTimer and whale.stateTimer <= 0) then
                 whale.state = "hunt"
@@ -400,9 +427,8 @@ function Whale.updateAI(whale, dt, player, waterArea)
         if distToTarget >= whale.lastDistanceToTarget - 5 then
             whale.stuckTimer = whale.stuckTimer + dt
             if whale.stuckTimer > 3.0 then
-                if whale.state == "hunt" and player and player.body then
-                    local newTarget = {x = player.body:getX(), y = player.body:getY()}
-                    whale.path = Whale.generateSmartPath(wx, wy, newTarget.x, newTarget.y, waterArea, whale)
+                if whale.state == "hunt" and playerValid then
+                    whale.path = Whale.generateSmartPath(wx, wy, px, py, waterArea, whale)
                 else
                     local padding = whale.data.w
                     local tx = love.math.random(waterArea.x + padding, waterArea.x + waterArea.w - padding)
@@ -498,7 +524,11 @@ function Whale.draw(debugMode)
             end
             
             local hw, hh = data.w/2, data.h/2
-            if w.damageFlash > 0 then love.graphics.setColor(1, 0.4, 0.4) else love.graphics.setColor(data.color) end
+            if w.dead then
+                love.graphics.setColor(0.3, 0.3, 0.4, 0.8)  -- pale grey-blue
+            else
+                if w.damageFlash > 0 then love.graphics.setColor(1, 0.4, 0.4) else love.graphics.setColor(data.color) end
+            end
 
             -- Tail (Fluke)
             love.graphics.push()
@@ -589,9 +619,31 @@ end
 
 function Whale.damage(whale, amount)
     if not whale or not whale.body or whale.body:isDestroyed() then return end
+    if whale.dead then return end  -- dead whales can't be damaged further
     whale.health = whale.health - amount
     whale.damageFlash = 0.3
-    if whale.health <= 0 then Whale.destroy(whale) end
+    if whale.health <= 0 then
+        whale.health = 0
+        Whale.kill(whale)
+    end
+end
+
+function Whale.kill(whale)
+    if not whale or whale.dead then return end
+    whale.dead = true
+    whale.state = "dead"
+    -- Remove all ropes attached to this whale
+    local RopeSystem = require("rope")
+    RopeSystem.destroyAllForObject(whale)
+    -- Disable AI by setting state to dead; no movement forces will be applied
+    -- Also set linear damping higher to slow down gradually
+    if whale.body and not whale.body:isDestroyed() then
+        whale.body:setLinearDamping(2.0)
+        whale.body:setAngularDamping(1.0)
+    end
+    -- Create a splash effect
+    local wx, wy = whale.body:getPosition()
+    require("water").createSplash(wx, wy, 150)
 end
 
 function Whale.destroy(whale)

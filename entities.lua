@@ -3,12 +3,27 @@ local WorldManager = require("world_manager")
 local RopeSystem = require("rope")
 local EffectsSystem = require("effects")
 local Water = require("water")
+local Whale = require("whale")
 
 local debugModeEnabled = false
 
 local Entities = {
     player = nil,
     list = {}
+}
+
+-- Explosive presets
+local EXPLOSIVE_PRESETS = {
+    grenade = {
+        radius = 150, damage = 10, force = 25,
+        width = 12, height = 12, mass = 0.8, friction = 0.3, restitution = 0.4,
+        label = "GRE"
+    },
+    tnt = {
+        radius = 300, damage = 700, force = 80,
+        width = 25, height = 25, mass = 1.5, friction = 0.4, restitution = 0.2,
+        label = "TNT"
+    }
 }
 
 function Entities.clear()
@@ -31,7 +46,8 @@ function Entities.createPlayer(x, y)
     Entities.player = {
         type = "player", body = body, shape = shape, fixture = fixture,
         w = cfg.width, h = cfg.height, particles = {}, ropeIds = {},
-        health = cfg.maxHealth, maxHealth = cfg.maxHealth, damageFlash = 0, thrusterCooldown = 0
+        health = cfg.maxHealth, maxHealth = cfg.maxHealth, damageFlash = 0, thrusterCooldown = 0,
+        dead = false -- Added tracking property
     }
     table.insert(Entities.list, Entities.player)
     return Entities.player
@@ -90,7 +106,56 @@ function Entities.createEnemy(x, y, w, h, angle)
     return enemy
 end
 
+function Entities.createGrenade(x, y)
+    local p = EXPLOSIVE_PRESETS.grenade
+    local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
+    local shape = love.physics.newRectangleShape(p.width, p.height)
+    local fixture = love.physics.newFixture(body, shape, p.mass)
+    fixture:setFriction(p.friction)
+    fixture:setRestitution(p.restitution)
+    
+    local grenade = {
+        type = "grenade",
+        body = body, shape = shape, fixture = fixture,
+        w = p.width, h = p.height,
+        timer = nil,                -- seconds until explosion
+        explosionRadius = p.radius,
+        explosionDamage = p.damage,
+        explosionForce = p.force,
+        ropeIds = {},
+        damageFlash = 0
+    }
+    table.insert(Entities.list, grenade)
+    return grenade
+end
+
+function Entities.createTNTBox(x, y, w, h)
+    w = w or 30
+    h = h or 30
+    local p = EXPLOSIVE_PRESETS.tnt
+    local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
+    local shape = love.physics.newRectangleShape(w, h)
+    local fixture = love.physics.newFixture(body, shape, p.mass)
+    fixture:setFriction(p.friction)
+    fixture:setRestitution(p.restitution)
+    
+    local tnt = {
+        type = "tnt",
+        body = body, shape = shape, fixture = fixture,
+        w = w, h = h,
+        timer = nil,
+        explosionRadius = p.radius,
+        explosionDamage = p.damage,
+        explosionForce = p.force,
+        ropeIds = {},
+        damageFlash = 0
+    }
+    table.insert(Entities.list, tnt)
+    return tnt
+end
+
 function Entities.update(dt)
+    -- Guard condition changed: Allow logic to run even if player is dead, as long as body exists
     if not Entities.player or not Entities.player.body or Entities.player.body:isDestroyed() then return end
     
     local p = Entities.player
@@ -101,59 +166,66 @@ function Entities.update(dt)
     local thrusting = false
     local pCfg = Config.player
     
-    if love.keyboard.isDown("right") then 
-        p.body:applyForce(pCfg.moveForceX, 0)
-        if p.thrusterCooldown <= 0 then
-            EffectsSystem.createParticle(bx - 5, by, -30, love.math.random(-10, 10), 30, 200, 0.8, "thruster")
-            p.thrusterCooldown = pCfg.thrusterCooldown
-        end
-        thrusting = true
-    end
-    if love.keyboard.isDown("left") then 
-        p.body:applyForce(-pCfg.moveForceX, 0)
-        if p.thrusterCooldown <= 0 then
-            EffectsSystem.createParticle(bx + 5, by, 30, love.math.random(-10, 10), 30, 200, 0.8, "thruster")
-            p.thrusterCooldown = pCfg.thrusterCooldown
-        end
-        thrusting = true
-    end
-    if love.keyboard.isDown("up") then 
-        p.body:applyForce(0, pCfg.moveForceYUp)
-        if p.thrusterCooldown <= 0 then
-            for i = 1, 3 do
-                EffectsSystem.createParticle(bx, by + 10, love.math.random(-15, 15), -40 - love.math.random(0, 20), 30, 200, 0.5 + love.math.random(), "thruster")
+    -- ONLY PROCESS CONTROLS IF ALIVE
+    if not p.dead then
+        if love.keyboard.isDown("right") then 
+            p.body:applyForce(pCfg.moveForceX, 0)
+            if p.thrusterCooldown <= 0 then
+                EffectsSystem.createParticle(bx - 5, by, -30, love.math.random(-10, 10), 30, 200, 0.8, "thruster")
+                p.thrusterCooldown = pCfg.thrusterCooldown
             end
-            p.thrusterCooldown = 0.02
+            thrusting = true
         end
-        thrusting = true
-    end    
-    
-    if love.keyboard.isDown("l") then 
-        p.body:applyForce(0, pCfg.moveForceYUp*5)
-        if p.thrusterCooldown <= 0 then
-            for i = 1, 3 do
-                EffectsSystem.createParticle(bx, by + 10, love.math.random(-30, 30), -40 - love.math.random(0, 30), 30, 200, 0.5 + love.math.random(), "thruster")
+        if love.keyboard.isDown("left") then 
+            p.body:applyForce(-pCfg.moveForceX, 0)
+            if p.thrusterCooldown <= 0 then
+                EffectsSystem.createParticle(bx + 5, by, 30, love.math.random(-10, 10), 30, 200, 0.8, "thruster")
+                p.thrusterCooldown = pCfg.thrusterCooldown
             end
-            p.thrusterCooldown = 0.05
+            thrusting = true
         end
-        thrusting = true
-    end
-    
-    if love.keyboard.isDown("down") then 
-        p.body:applyForce(0, pCfg.moveForceYDown)
-        if p.thrusterCooldown <= 0 then
-            EffectsSystem.createParticle(bx, by - 10, love.math.random(-15, 15), 30 + love.math.random(0, 20), 30, 200, 0.8, "thruster")
-            p.thrusterCooldown = pCfg.thrusterCooldown
+        if love.keyboard.isDown("up") then 
+            p.body:applyForce(0, pCfg.moveForceYUp)
+            if p.thrusterCooldown <= 0 then
+                for i = 1, 3 do
+                    EffectsSystem.createParticle(bx, by + 10, love.math.random(-15, 15), -40 - love.math.random(0, 20), 30, 200, 0.5 + love.math.random(), "thruster")
+                end
+                p.thrusterCooldown = 0.02
+            end
+            thrusting = true
+        end    
+        
+        if love.keyboard.isDown("l") then 
+            p.body:applyForce(0, pCfg.moveForceYUp*5)
+            if p.thrusterCooldown <= 0 then
+                for i = 1, 3 do
+                    EffectsSystem.createParticle(bx, by + 10, love.math.random(-30, 30), -40 - love.math.random(0, 30), 30, 200, 0.5 + love.math.random(), "thruster")
+                end
+                p.thrusterCooldown = 0.05
+            end
+            thrusting = true
         end
-        thrusting = true
+        
+        if love.keyboard.isDown("down") then 
+            p.body:applyForce(0, pCfg.moveForceYDown)
+            if p.thrusterCooldown <= 0 then
+                EffectsSystem.createParticle(bx, by - 10, love.math.random(-15, 15), 30 + love.math.random(0, 20), 30, 200, 0.8, "thruster")
+                p.thrusterCooldown = pCfg.thrusterCooldown
+            end
+            thrusting = true
+        end
+        if not thrusting and love.math.random() < 0.02 then
+            EffectsSystem.createParticle(bx, by, love.math.random(-5, 5), love.math.random(-2, 2), 20, 150, 1, "smoke")
+        end
+        
+        p.body:applyTorque(-p.body:getAngle() * pCfg.torqueForce - p.body:getAngularVelocity() * 2.5)
+        if love.keyboard.isDown("pageup") then p.body:applyTorque(-pCfg.torqueForce) end
+        if love.keyboard.isDown("pagedown") then p.body:applyTorque(pCfg.torqueForce) end
+    else
+        -- If dead, apply heavy damping to bring the body to a gradual rest
+        local vx, vy = p.body:getLinearVelocity()
+        p.body:setLinearVelocity(vx * 0.95, vy * 0.95)
     end
-    if not thrusting and love.math.random() < 0.02 then
-        EffectsSystem.createParticle(bx, by, love.math.random(-5, 5), love.math.random(-2, 2), 20, 150, 1, "smoke")
-    end
-    
-    p.body:applyTorque(-p.body:getAngle() * pCfg.torqueForce - p.body:getAngularVelocity() * 2.5)
-    if love.keyboard.isDown("pageup") then p.body:applyTorque(-pCfg.torqueForce) end
-    if love.keyboard.isDown("pagedown") then p.body:applyTorque(pCfg.torqueForce) end
     
 
     local px, py = p.body:getPosition()
@@ -175,7 +247,15 @@ function Entities.update(dt)
         elseif e.body and e.body:isActive() then
             if e.damageFlash then e.damageFlash = math.max(0, e.damageFlash - dt) end
             
-            if e.type == "enemy" then
+            if (e.type == "grenade" or e.type == "tnt") and e.timer and e.timer > 0 then
+                e.timer = e.timer - dt
+                if e.timer <= 0 then
+                    Entities.explode(e)
+                end
+            end
+            
+            -- Only track/hunt the player if they are still alive
+            if e.type == "enemy" and not p.dead then
                 local ex, ey = e.body:getPosition()
                 local dx, dy = pX - ex, pY - ey
                 e.thrusterCooldown = math.max(0, (e.thrusterCooldown or 0) - dt)
@@ -225,7 +305,7 @@ function Entities.grab(isEnemyOnly)
 end
 
 function Entities.applyDamage(e, dmg)
-    if not e or not e.health or e.body:isDestroyed() then return end
+    if not e or not e.health or e.body:isDestroyed() or e.dead then return end
     if e.type == "box" and e.sliceDepth then
         dmg = dmg * math.pow(0.85, e.sliceDepth)
     end
@@ -234,7 +314,18 @@ function Entities.applyDamage(e, dmg)
     e.damageFlash = 0.2
     
     if e.health <= 0 then 
-        Entities.destroy(e) 
+        e.health = 0
+        if e.type == "player" then
+            e.dead = true
+            e.body:setLinearVelocity(0, 0)
+            e.body:setAngularVelocity(0)
+            -- if e.fixture and not e.fixture:isDestroyed() then
+                -- e.fixture:setSensor(true) -- Turns off collisions so things pass through gracefully
+            -- end
+            RopeSystem.destroyAllForObject(e) -- Snaps ropes attached to the dead player
+        else
+            Entities.destroy(e) 
+        end
     end
 end
 
@@ -250,6 +341,144 @@ function Entities.destroy(e)
         EffectsSystem.createDamageEffect(ex - 15, ey, ex + 15, ey)
     end
     e.body:destroy()
+end
+
+function Entities.explode(e)
+    if not e or not e.body or e.body:isDestroyed() then return end
+    local cx, cy = e.body:getPosition()
+    local radius = e.explosionRadius
+    local maxDamage = e.explosionDamage
+    local maxForce = e.explosionForce
+
+    -- Intensity factor (0…1) based on both damage and force
+    local intensity = (maxDamage / 300) * 0.6 + (maxForce / 1000) * 0.4
+    intensity = math.min(1, intensity)
+
+    -- 1. Bright flash (big damage effect line)
+    EffectsSystem.createFlash(cx, cy, radius, intensity)
+
+    -- 2. Shockwave ring
+    EffectsSystem.createShockwave(cx, cy, radius, intensity)
+
+    -- 3. Fireball core (large orange particles)
+    local coreCount = 10 + math.floor(20 * intensity)
+    for i = 1, coreCount do
+        local angle = love.math.random() * math.pi * 2
+        local dist = love.math.random(0, radius * 0.6)
+        local px = cx + math.cos(angle) * dist
+        local py = cy + math.sin(angle) * dist
+        local vx = math.cos(angle) * love.math.random(30, 120 * intensity)
+        local vy = math.sin(angle) * love.math.random(30, 120 * intensity)
+        local size = 2 + love.math.random() * 4 * intensity
+        EffectsSystem.createParticle(px, py, vx, vy, 20 + 30 * intensity, 250, size, "orangeSpark")
+    end
+
+    -- 4. Sparks and embers (more = more damage)
+    local sparkCount = 30 + math.floor(70 * intensity)
+    for i = 1, sparkCount do
+        local angle = love.math.random() * math.pi * 2
+        local dist = love.math.random(5, radius)
+        local px = cx + math.cos(angle) * dist
+        local py = cy + math.sin(angle) * dist
+        local speed = 50 + love.math.random() * 200 * intensity
+        local vx = math.cos(angle) * speed + love.math.random(-30, 30)
+        local vy = math.sin(angle) * speed + love.math.random(-30, 30)
+        local ptype = love.math.random() < 0.7 and "orangeSpark" or "ember"
+        EffectsSystem.createParticle(px, py, vx, vy, 15 + 20 * intensity, 300, 1.5 + intensity, ptype)
+    end
+
+    -- 5. Debris chunks (small dark pieces)
+    local debrisCount = 5 + math.floor(15 * intensity)
+    for i = 1, debrisCount do
+        local angle = love.math.random() * math.pi * 2
+        local dist = love.math.random(0, radius * 0.8)
+        local px = cx + math.cos(angle) * dist
+        local py = cy + math.sin(angle) * dist
+        local speed = 80 + love.math.random() * 150 * intensity
+        local vx = math.cos(angle) * speed + love.math.random(-40, 40)
+        local vy = math.sin(angle) * speed + love.math.random(-40, 40)
+        EffectsSystem.createParticle(px, py, vx, vy, 25, 200, 2 + intensity, "debris")
+    end
+
+    -- 6. Thick smoke cloud
+    local smokeCount = 20 + math.floor(40 * intensity)
+    for i = 1, smokeCount do
+        local angle = love.math.random() * math.pi * 2
+        local dist = love.math.random(0, radius * 0.9)
+        local px = cx + math.cos(angle) * dist
+        local py = cy + math.sin(angle) * dist
+        local vx = math.cos(angle) * love.math.random(10, 50) + love.math.random(-20, 20)
+        local vy = math.sin(angle) * love.math.random(10, 50) + love.math.random(-20, 20) - 20
+        local size = 3 + love.math.random() * 5 * intensity
+        EffectsSystem.createParticle(px, py, vx, vy, 40 + 60 * intensity, 120, size, "smoke")
+    end
+
+    -- 7. Collect affected entities from Entities.list
+    local affected = {}
+    for _, other in ipairs(Entities.list) do
+        if other ~= e and other.body and not other.body:isDestroyed() then
+            local ox, oy = other.body:getPosition()
+            local dx = ox - cx
+            local dy = oy - cy
+            local dist = math.sqrt(dx*dx + dy*dy)
+            if dist < radius then
+                table.insert(affected, {other=other, dist=dist, ox=ox, oy=oy, dx=dx, dy=dy})
+            end
+        end
+    end
+
+    -- Also collect whales from Whale module
+    local whales = Whale.getAll()
+    for _, w in ipairs(whales) do
+        if w.body and not w.body:isDestroyed() and not w.dead then
+            local ox, oy = w.body:getPosition()
+            local dx = ox - cx
+            local dy = oy - cy
+            local dist = math.sqrt(dx*dx + dy*dy)
+            if dist < radius then
+                table.insert(affected, {other=w, dist=dist, ox=ox, oy=oy, dx=dx, dy=dy})
+            end
+        end
+    end
+
+    -- Apply impulses (push)
+    for _, a in ipairs(affected) do
+        local falloff = 1 - (a.dist / radius)
+        local forceMag = maxForce * falloff * (0.5 + intensity)   -- extra kick
+        local angle = math.atan2(a.dy, a.dx)
+        local fx = math.cos(angle) * forceMag
+        local fy = math.sin(angle) * forceMag
+        if a.other.body and not a.other.body:isDestroyed() then
+            a.other.body:applyLinearImpulse(fx, fy, a.ox, a.oy)
+        end
+    end
+
+    -- Apply damage
+    for _, a in ipairs(affected) do
+        local falloff = 1 - (a.dist / radius)
+        local damage = math.floor(maxDamage * falloff)
+        if a.other.type == "player" then
+            Entities.applyDamage(a.other, damage)
+        elseif a.other.type == "enemy" then
+            Entities.applyDamage(a.other, damage)
+        elseif a.other.type == "box" then
+            Entities.applyDamage(a.other, damage)
+        elseif a.other.type == "ball" then
+            Entities.applyDamage(a.other, damage)
+        elseif a.other.type == "whale" then
+            Entities.applyDamage(a.other, damage)
+        end
+    end
+
+    -- Destroy the explosive
+    RopeSystem.destroyAllForObject(e)
+    e.body:destroy()
+    for i, ent in ipairs(Entities.list) do
+        if ent == e then
+            table.remove(Entities.list, i)
+            break
+        end
+    end
 end
 
 function Entities.mergeBoxesTouchingPlayer(player)
@@ -509,6 +738,27 @@ function Entities.draw()
                 love.graphics.line(x - e.r * cosA, y - e.r * sinA, x + e.r * cosA, y + e.r * sinA)
                 love.graphics.line(x - e.r * sinA, y + e.r * cosA, x + e.r * sinA, y - e.r * cosA)
                 love.graphics.setLineWidth(1)
+            elseif e.type == "grenade" then
+                love.graphics.setColor(0.25, 0.35, 0.2)  
+                love.graphics.circle("fill", x, y, e.w/2)
+                -- love.graphics.setColor(0,0,0)
+                -- love.graphics.circle("line", x, y, e.w/2)
+                if e.timer and e.timer > 0 then
+                    love.graphics.setColor(1,1,0)
+                    love.graphics.print(string.format("%.1f", e.timer), x-4, y-12)
+                end
+            elseif e.type == "tnt" then
+                love.graphics.setColor(0.7, 0.1, 0.05)
+                love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))
+                love.graphics.setColor(0,0,0)
+                -- love.graphics.polygon("line", e.body:getWorldPoints(e.shape:getPoints()))
+                love.graphics.print("TNT", x-8, y-5)
+                love.graphics.print("" .. e.explosionForce, x-8, y-14)
+                love.graphics.print("" .. e.explosionDamage, x-8, y+4)
+                if e.timer and e.timer > 0 then
+                    love.graphics.setColor(1,1,0)
+                    love.graphics.print(string.format("%.1f", e.timer), x-6, y-20)
+                end
             else
                 love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))
             end

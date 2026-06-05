@@ -151,7 +151,7 @@ function Water.createSplash(x, y, intensity)
     end
 end
 
--- Basic water rendering (from water_basic.lua)
+-- Basic water rendering 
 function Water.draw_basic(area)
     local time = love.timer.getTime()
     local steps = math.max(15, math.floor(area.w / 20))
@@ -203,7 +203,7 @@ function Water.draw_basic(area)
     end
 end
 
--- Deep water rendering (enhanced with mesh, god rays, caustics, etc.)
+-- Deep water rendering 
 function Water.draw_deep(area)
     local time = love.timer.getTime()
     local steps = math.max(15, math.floor(area.w / 12))
@@ -298,60 +298,121 @@ function Water.draw_deep(area)
     -- end
 end
 
+-- Algae water – deep, murky green, translucent, with drifting clumps and spores
 function Water.draw_algae(area)
-    local t = love.timer.getTime()
-    
-    -- 1. Base deep murky green body
-    love.graphics.setColor(0.05, 0.25, 0.15, 0.85)
-    love.graphics.rectangle("fill", area.x, area.y + 5, area.w, area.h - 5)
-    
-    -- 2. Bright, wavy algae "scum" on the surface
-    love.graphics.setColor(0.25, 0.65, 0.2, 0.9)
-    local segments = math.floor(area.w / 15)
-    local surfacePoly = {area.x, area.y + area.h, area.x + area.w, area.y + area.h}
-    
-    for i = segments, 0, -1 do
-        local px = area.x + (i / segments) * area.w
-        -- Organic overlapping sine waves for a swampy look
-        local wave = math.sin(t * 1.5 + px * 0.04) * 4 + math.cos(t * 1.2 + px * 0.02) * 2
-        table.insert(surfacePoly, px)
-        table.insert(surfacePoly, area.y + wave)
+    local time = love.timer.getTime()
+    local steps = math.max(15, math.floor(area.w / 12))
+    local stepSize = area.w / steps
+
+    -- Reuse buffers (clear them)
+    for i = 1, #lineBuffer do lineBuffer[i] = nil end
+    for i = 1, #sparkleBuffer do sparkleBuffer[i] = nil end
+    for i = 1, #bubbleBuffer do bubbleBuffer[i] = nil end
+
+    -- Initialize or update dynamic mesh
+    if not area.mesh or area.meshSegments ~= steps then
+        area.meshSegments = steps
+        area.verticesTable = {}
+        for i = 0, steps do
+            table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1})
+            table.insert(area.verticesTable, {0, 0, 0, 0, 1, 1, 1, 1})
+        end
+        area.mesh = love.graphics.newMesh(area.verticesTable, "strip", "dynamic")
     end
-    
-    if #surfacePoly >= 6 then
-        love.graphics.polygon("fill", surfacePoly)
+
+    -- Update mesh vertices with algae colors (green gradient, translucent)
+    local idx = 1
+    local lineIdx = 1
+
+    for i = 0, steps do
+        local x = area.x + i * stepSize
+        -- Wavy surface (organic, slower than deep water)
+        local waveY = area.y + math.sin(time * 1.8 + i * 0.22) * 4.0 + math.cos(time * 1.0 + i * 0.15) * 2.5
+
+        -- Store surface points for line drawing
+        lineBuffer[lineIdx] = x
+        lineBuffer[lineIdx + 1] = waveY
+        lineIdx = lineIdx + 2
+
+        -- Tiny sparkles (like light hitting algae)
+        if i > 0 and i < steps and math.sin(time * 4 + i * 1.5) > 0.85 then
+            table.insert(sparkleBuffer, x)
+            table.insert(sparkleBuffer, waveY + 1)
+        end
+
+        -- Top vertex (surface): bright lime green, fairly transparent
+        area.verticesTable[idx][1] = x
+        area.verticesTable[idx][2] = waveY
+        area.verticesTable[idx][5] = 0.25  -- R
+        area.verticesTable[idx][6] = 0.65  -- G
+        area.verticesTable[idx][7] = 0.20  -- B
+        area.verticesTable[idx][8] = 0.9  -- Alpha (translucent)
+
+        idx = idx + 1
+
+        -- Bottom vertex: dark murky green, mostly opaque
+        area.verticesTable[idx][1] = x
+        area.verticesTable[idx][2] = area.y + area.h
+        area.verticesTable[idx][5] = 0.05  -- R
+        area.verticesTable[idx][6] = 0.45  -- G
+        area.verticesTable[idx][7] = 0.15  -- B
+        area.verticesTable[idx][8] = 0.85  -- Alpha (near opaque)
+
+        idx = idx + 1
     end
-    
-    -- 3. Top highlight (bright green edge)
-    love.graphics.setColor(0.4, 0.8, 0.3, 1)
-    love.graphics.setLineWidth(2)
-    for i = 5, #surfacePoly - 2, 2 do
-        love.graphics.line(surfacePoly[i], surfacePoly[i+1], surfacePoly[i-2], surfacePoly[i-1])
+
+    -- Draw the translucent water body
+    area.mesh:setVertices(area.verticesTable)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(area.mesh)
+
+    -- ========== SURFACE HIGHLIGHTS (bright green scum) ==========
+    if #lineBuffer >= 4 then
+        -- Outer thick glow
+        love.graphics.setColor(0.45, 0.85, 0.25, 0.85)
+        love.graphics.setLineWidth(3)
+        love.graphics.line(lineBuffer)
+
+        -- Inner bright highlight
+        love.graphics.setColor(0.65, 0.95, 0.35, 0.95)
+        love.graphics.setLineWidth(1.5)
+        love.graphics.line(lineBuffer)
     end
-    
-    -- 4. Suspended drifting algae clumps
-    love.graphics.setColor(0.3, 0.6, 0.25, 0.6)
-    -- Calculate how many clumps based on area size
-    local numParticles = math.floor((area.w * area.h) / 2500) 
-    
-    for i = 1, numParticles do
-        -- Use pseudo-random math based on area position so they don't flicker
-        local pseudoX = (area.x * 13 + i * 117) % area.w
-        local pseudoY = (area.y * 7 + i * 233) % (area.h - 15) + 15
-        
-        -- Make them gently drift in circles using time
-        local driftX = math.sin(t * 0.5 + pseudoY * 0.1) * 8
-        local driftY = math.cos(t * 0.3 + pseudoX * 0.1) * 5
-        
-        local px = area.x + pseudoX + driftX
-        local py = area.y + pseudoY + driftY
-        
-        -- Keep them visually constrained to the water boundaries horizontally
+
+    -- ========== SPARKLES (tiny bright points) ==========
+    if #sparkleBuffer > 0 then
+        love.graphics.setPointSize(2)
+        love.graphics.setColor(0.8, 1.0, 0.4, 0.6)
+        love.graphics.points(sparkleBuffer)
+    end
+
+    -- ========== DRIFTING ALGAE CLUMPS ==========
+    local clumpCount = math.floor(area.w * area.h / 1800)
+    for i = 1, clumpCount do
+        -- Pseudo‑random positions based on area and index (stable across frames)
+        local seedX = (area.x * 17 + i * 131) % area.w
+        local seedY = (area.y * 23 + i * 269) % (area.h - 20) + 10
+        -- Gentle drifting motion
+        local driftX = math.sin(time * 0.4 + seedY * 0.08) * 12
+        local driftY = math.cos(time * 0.3 + seedX * 0.06) * 8
+        local px = area.x + seedX + driftX
+        local py = area.y + seedY + driftY
+
         if px > area.x and px < area.x + area.w then
-            local radius = (i % 3) + 1.5 -- Varying clump sizes
-            love.graphics.circle("fill", px, py, radius)
+            local size = 1 + (i % 3)
+            love.graphics.setColor(0.35, 0.65, 0.2, 0.15)
+            love.graphics.circle("fill", px, py, size)
+            -- Inner highlight for depth
+            love.graphics.setColor(0.55, 0.85, 0.35, 0.2)
+            love.graphics.circle("fill", px - 0.5, py - 0.5, size * 0.4)
         end
     end
+    
+
+    -- Reset graphics state
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.setLineWidth(1)
+    love.graphics.setPointSize(1)
 end
 
 -- Main draw function - routes to appropriate renderer based on waterType

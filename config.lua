@@ -23,7 +23,7 @@ local Config = {
         mass = 1.0,
         friction = 0.1,
         restitution = 0.2,
-        maxHealth = 200,
+        maxHealth = 1000000,
         moveForceX = 30,
         moveForceYUp = -90,
         moveForceYDown = 20,
@@ -51,10 +51,10 @@ local Config = {
     -- Rope Mechanics
     rope = {
         minSegments = 3,
-        maxSegments = 15,
-        segmentDensity = 0.1,
-        thickness = 3,
-        extraLengthLimit = 2
+        maxSegments = 23,
+        segmentDensity = 0.25,
+        thickness = 2,
+        extraLengthLimit = 3
     },
 
     -- Camera System

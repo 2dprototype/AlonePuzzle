@@ -21,8 +21,8 @@ function love.load()
     
     -- Instantiate Scene Objects
     -- Entities.createPlayer(-820, 0)
-    -- Entities.createPlayer(-1655, 986)
-    Entities.createPlayer(-660, 400)
+    Entities.createPlayer(-1655, 986)
+    -- Entities.createPlayer(-660, 400)
     
     -- Populating Physical Rigid Props
     Entities.createBox(-800, 570, 8, 80, 0, 2, 0.2)
@@ -34,7 +34,7 @@ function love.load()
     -- Grid Matrix Generator Setup (more boxes)
     for r = 0, 3 do
         for c = 0, 2 do
-            Entities.createBox(-1600 + (c * 30), 660 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r),10000)
+            Entities.createBox(-1600 + (c * 30), 660 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r), 600)
         end
     end
     
@@ -75,7 +75,7 @@ function love.load()
     WorldManager.createBoundary(-1085, 1305, 10, 600, 0)
     
     -- Create water areas
-    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9, "algae") 
+    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9, "basic") 
     Water.createArea(-1880, 1050, 790, 550, 1.1, 0.9, "deep") 
     Whale.create(-1580, 1200, "baby", 45, 28)   
     Whale.create(-1480, 1300, "gentle", 45, 28)   
@@ -134,12 +134,12 @@ function love.draw()
     local smallFont = love.graphics.newFont(8)
     love.graphics.setFont(smallFont)
     
-    WorldManager.drawBoundaries()
     Entities.draw()
     RopeSystem.drawAll(game.debugMode)
     EffectsSystem.draw()
     Whale.draw(game.debugMode)
     Water.draw()
+    WorldManager.drawBoundaries()
     
     love.graphics.setFont(oldFont)
     if game.debugMode then drawDebugData() end
@@ -222,6 +222,26 @@ function love.mousemoved(x, y)
 end
 
 function love.keypressed(key)
+    
+    -- Number keys 1-9: set timer on touched explosive
+    local num = tonumber(key)
+    if num and num >= 1 and num <= 9 then
+        local player = Entities.player
+        if player and player.body then
+            local px, py = player.body:getPosition()
+            for _, e in ipairs(Entities.list) do
+                if (e.type == "grenade" or e.type == "tnt") and e.body and not e.body:isDestroyed() then
+                    local ex, ey = e.body:getPosition()
+                    local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
+                    if dist < 40 then   -- contact range
+                        e.timer = num
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
     if key == "escape" then love.event.quit()
     elseif key == "f1" then Camera.mode = "follow_player"
     elseif key == "f2" then Camera.mode = "follow_enemy"
@@ -261,6 +281,12 @@ function love.keypressed(key)
         if player then
             Entities.mergeBoxesTouchingPlayer(player)
         end
+    elseif key == "g" then
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        Entities.createGrenade(mx, my)
+    elseif key == "t" then
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        Entities.createTNTBox(mx, my, 30, 30)
     elseif key == "lshift" or key == "rshift" then
         local p = Entities.player
         if p and p.ropeIds and #p.ropeIds == 2 then
@@ -333,5 +359,28 @@ function drawDebugData()
         local vx, vy = p.body:getLinearVelocity()
         love.graphics.setColor(0, 0.5, 1, 0.8)
         love.graphics.line(x, y, x + vx, y + vy)
+    end
+    
+    -- Draw explosive blast radii and timers
+    for _, e in ipairs(Entities.list) do
+        if (e.type == "grenade" or e.type == "tnt") and e.body and not e.body:isDestroyed() then
+            local x, y = e.body:getPosition()
+            -- Blast radius circle (semi-transparent red)
+            love.graphics.setColor(1, 0, 0, 0.2)
+            love.graphics.circle("fill", x, y, e.explosionRadius)
+            love.graphics.setColor(1, 0, 0, 0.6)
+            love.graphics.circle("line", x, y, e.explosionRadius)
+            -- Timer info
+            if e.timer and e.timer > 0 then
+                love.graphics.setColor(1, 1, 0, 1)
+                love.graphics.print(string.format("Timer: %.1f", e.timer), x - 15, y - e.explosionRadius - 10)
+            else
+                love.graphics.setColor(0.5, 0.5, 0.5, 1)
+                love.graphics.print("Inert", x - 10, y - e.explosionRadius - 10)
+            end
+            -- Show damage/force values
+            love.graphics.setColor(1, 1, 1, 0.8)
+            love.graphics.print(string.format("Dmg:%d Force:%d", e.explosionDamage, e.explosionForce), x - 20, y + e.explosionRadius + 5)
+        end
     end
 end

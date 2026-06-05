@@ -1,11 +1,11 @@
--- world_manager.lua (FIXED)
+-- world_manager.lua (UPDATED WITH SLICING FIXES)
 local Config = require("config")
 local WorldManager = {
     world = nil,
     boundaries = {},
     spatialGrid = {}, -- Format: grid[cx][cy] = { entities }
     timer = 0,
-    activeRadius = Config.chunks.activeRadius  -- Add this
+    activeRadius = Config.chunks.activeRadius
 }
 
 function WorldManager.init()
@@ -47,34 +47,15 @@ function WorldManager.optimizeActiveChunks(cameraX, cameraY)
     local ccx, ccy = WorldManager.getChunkCoords(cameraX, cameraY)
     local radius = WorldManager.activeRadius
 
-    -- First, activate ALL dynamic bodies (disable the chunk culling to show full map)
-    -- If you want to keep optimization but show more, increase the radius
-    
-    -- For now, let's just keep everything active to ensure the map loads
     for cx, col in pairs(WorldManager.spatialGrid) do
         for cy, entities in pairs(col) do
             for _, entity in ipairs(entities) do
                 if entity.body and not entity.body:isDestroyed() and entity.body:getType() == "dynamic" then
-                    -- Keep all entities active for full map visibility
                     entity.body:setActive(true)
                 end
             end
         end
     end
-    
-    -- Optional: If you want optimization back later, uncomment this:
-    --[[
-    for cx, col in pairs(WorldManager.spatialGrid) do
-        for cy, entities in pairs(col) do
-            local isWithinRange = (math.abs(cx - ccx) <= radius) and (math.abs(cy - ccy) <= radius)
-            for _, entity in ipairs(entities) do
-                if entity.body and not entity.body:isDestroyed() and entity.body:getType() == "dynamic" then
-                    entity.body:setActive(isWithinRange)
-                end
-            end
-        end
-    end
-    --]]
 end
 
 function WorldManager.createBoundary(x, y, w, h, angle)
@@ -116,7 +97,6 @@ function WorldManager.getCollidingBoundary(player)
                 local boundaryBody = isPlayerA and bodyB or bodyA
                 for _, b in ipairs(WorldManager.boundaries) do
                     if b.body == boundaryBody then
-                        -- Return boundary AND the contact itself for later point extraction
                         return b, contact
                     end
                 end
@@ -127,10 +107,8 @@ function WorldManager.getCollidingBoundary(player)
     return nil, nil
 end
 
--- Get the exact overlap interval (min/max projection) from contact points
 function WorldManager.getContactOverlapOnBoundary(boundary, playerBody, contact)
     if not contact then
-        -- If no specific contact, find any contact between player and boundary
         local contacts = WorldManager.world:getContactList()
         for _, c in ipairs(contacts) do
             if c:isEnabled() then
@@ -149,19 +127,12 @@ function WorldManager.getContactOverlapOnBoundary(boundary, playerBody, contact)
     end
     if not contact then return nil, nil end
 
-    -- Get contact points
     local x1, y1, x2, y2, nx, ny = contact:getPositions()
     local points = {}
-    if x1 and y1 then
-        table.insert(points, {x = x1, y = y1})
-    end
-    if x2 and y2 then
-        table.insert(points, {x = x2, y = y2})
-    end
-    -- Also add the player's position? Not needed, contacts are enough.
+    if x1 and y1 then table.insert(points, {x = x1, y = y1}) end
+    if x2 and y2 then table.insert(points, {x = x2, y = y2}) end
     if #points == 0 then return nil, nil end
 
-    -- Determine boundary's length axis (same as before)
     local worldPoints = {boundary.body:getWorldPoints(boundary.shape:getPoints())}
     local p1 = {x=worldPoints[1], y=worldPoints[2]}
     local p2 = {x=worldPoints[3], y=worldPoints[4]}
@@ -180,7 +151,6 @@ function WorldManager.getContactOverlapOnBoundary(boundary, playerBody, contact)
         axis = {x = dx23/len23, y = dy23/len23}
     end
 
-    -- Project all contact points onto axis
     local minProj, maxProj = math.huge, -math.huge
     for _, pt in ipairs(points) do
         local proj = pt.x * axis.x + pt.y * axis.y
@@ -188,20 +158,17 @@ function WorldManager.getContactOverlapOnBoundary(boundary, playerBody, contact)
         if proj > maxProj then maxProj = proj end
     end
 
-    -- Add a small buffer to ensure the cut fully covers the contact area
     local buffer = 3
     return minProj - buffer, maxProj + buffer
 end
 
 function WorldManager.computeSliceInfo(boundary, playerBody, playerShape, contact)
-    -- Get boundary corners in world space
     local points = {boundary.body:getWorldPoints(boundary.shape:getPoints())}
     local p1 = {x=points[1], y=points[2]}
     local p2 = {x=points[3], y=points[4]}
     local p3 = {x=points[5], y=points[6]}
     local p4 = {x=points[7], y=points[8]}
     
-    -- Determine length axis (longer side)
     local dx12 = p2.x - p1.x
     local dy12 = p2.y - p1.y
     local len12 = math.sqrt(dx12*dx12 + dy12*dy12)
@@ -220,7 +187,6 @@ function WorldManager.computeSliceInfo(boundary, playerBody, playerShape, contac
         width = len12
     end
     
-    -- Boundary projection onto length axis
     local boundaryMin, boundaryMax = math.huge, -math.huge
     for i = 1, #points, 2 do
         local proj = points[i]*lengthAxis.x + points[i+1]*lengthAxis.y
@@ -228,13 +194,11 @@ function WorldManager.computeSliceInfo(boundary, playerBody, playerShape, contac
         if proj > boundaryMax then boundaryMax = proj end
     end
     
-    -- Get exact overlap interval from contact points
     local overlapStart, overlapEnd = WorldManager.getContactOverlapOnBoundary(boundary, playerBody, contact)
     if not overlapStart or overlapEnd <= overlapStart + 5 then
-        return nil  -- Not enough overlap
+        return nil
     end
     
-    -- Ensure overlap stays within boundary bounds
     overlapStart = math.max(boundaryMin, overlapStart)
     overlapEnd = math.min(boundaryMax, overlapEnd)
     if overlapEnd <= overlapStart + 5 then return nil end
@@ -257,8 +221,6 @@ function WorldManager.computeSliceInfo(boundary, playerBody, playerShape, contac
     
     if #pieces == 0 then return nil end
     
-    -- ==== THE FIX IS HERE ====
-    -- Only check if the chosen length axis corresponds to the boundary's width
     local isLengthAxisW = math.abs(length - boundary.w) < 0.1
     
     local centerX, centerY = boundary.body:getPosition()
@@ -282,20 +244,35 @@ function WorldManager.computeSliceInfo(boundary, playerBody, playerShape, contac
         centerY = centerY,
         boundaryMin = boundaryMin,
         boundaryMax = boundaryMax,
-        boundaryCenterProj = boundaryCenterProj
+        boundaryCenterProj = boundaryCenterProj,
+        overlapStart = overlapStart, -- Saved for effect placement
+        overlapEnd = overlapEnd     -- Saved for effect placement
     }
 end
 
 function WorldManager.performSlice(boundary, sliceInfo)
     local EffectsSystem = require("effects")
-    local Entities = require("entities") -- Require here to avoid circular dependency
+    local Entities = require("entities")
     
-    -- Draw slice visual effect along the cut
-    local points = {boundary.body:getWorldPoints(boundary.shape:getPoints())}
-    EffectsSystem.createDamageEffect(points[1], points[2], points[5], points[6])
+    local axis = sliceInfo.lengthAxis
+    local perpX, perpY = -axis.y, axis.x
+    local halfW = sliceInfo.width / 2
+
+    -- ==== FIX 2: Create damage effects exactly along the two real slicing areas ====
+    local function drawCutEffect(p)
+        local cutCenterX = sliceInfo.centerX + axis.x * (p - sliceInfo.boundaryCenterProj)
+        local cutCenterY = sliceInfo.centerY + axis.y * (p - sliceInfo.boundaryCenterProj)
+        local x1 = cutCenterX - perpX * halfW
+        local y1 = cutCenterY - perpY * halfW
+        local x2 = cutCenterX + perpX * halfW
+        local y2 = cutCenterY + perpY * halfW
+        EffectsSystem.createDamageEffect(x1, y1, x2, y2)
+    end
+
+    if sliceInfo.overlapStart then drawCutEffect(sliceInfo.overlapStart) end
+    if sliceInfo.overlapEnd then drawCutEffect(sliceInfo.overlapEnd) end
     
     local newBoundaries = {}
-    local axis = sliceInfo.lengthAxis
     
     for _, piece in ipairs(sliceInfo.pieces) do
         local pieceCenterProj = (piece.start + piece.finish) / 2
@@ -314,11 +291,14 @@ function WorldManager.performSlice(boundary, sliceInfo)
         
         if piece.type == "dynamic" then
             -- ==== CONVERT TO ENTITY BOX ====
-            -- Based on your main.lua: Entities.createBox(x, y, w, h, angle, density, friction)
-            local density = 1.0
-            local newBox = Entities.createBox(newCenterX, newCenterY, newW, newH, sliceInfo.angle, density, sliceInfo.friction)
+            -- ==== FIX 1: Shave size very slightly so it doesn't jam inside static pieces ====
+            local padding = 1.5
+            local boxW = math.max(1, newW - padding)
+            local boxH = math.max(1, newH - padding)
             
-            -- Carry over the restitution and collision filters
+            local density = 1.0
+            local newBox = Entities.createBox(newCenterX, newCenterY, boxW, boxH, sliceInfo.angle, density, sliceInfo.friction)
+            
             if newBox and newBox.fixture then
                 newBox.fixture:setRestitution(sliceInfo.restitution)
                 if sliceInfo.categories then
@@ -334,7 +314,6 @@ function WorldManager.performSlice(boundary, sliceInfo)
             newFixture:setFriction(sliceInfo.friction)
             newFixture:setRestitution(sliceInfo.restitution)
             
-            -- Carry over collision filters to static pieces too
             if sliceInfo.categories then
                 newFixture:setFilterData(sliceInfo.categories, sliceInfo.mask, sliceInfo.group)
             end
@@ -350,17 +329,24 @@ function WorldManager.performSlice(boundary, sliceInfo)
         end
     end
     
-    -- Sparks at the cut line
-    for i = 1, 20 do
-        local t = love.math.random()
-        local sparkX = points[1] + (points[5] - points[1]) * t
-        local sparkY = points[2] + (points[6] - points[2]) * t
-        local angle = love.math.random() * math.pi * 2
-        local speed = love.math.random(50, 150)
-        local vx = math.cos(angle) * speed
-        local vy = math.sin(angle) * speed - 30
-        EffectsSystem.createParticle(sparkX, sparkY, vx, vy, 18, 350, 2.5, "orangeSpark")
+    -- ==== FIX 2 CONTINUED: Generate particle sparks explicitly at the cut regions ====
+    local function spawnSparksAtCut(p)
+        local cutCenterX = sliceInfo.centerX + axis.x * (p - sliceInfo.boundaryCenterProj)
+        local cutCenterY = sliceInfo.centerY + axis.y * (p - sliceInfo.boundaryCenterProj)
+        for i = 1, 10 do
+            local t = love.math.random() * 2 - 1 -- Span across full edge width
+            local sparkX = cutCenterX + perpX * halfW * t
+            local sparkY = cutCenterY + perpY * halfW * t
+            local angle = love.math.random() * math.pi * 2
+            local speed = love.math.random(50, 150)
+            local vx = math.cos(angle) * speed
+            local vy = math.sin(angle) * speed - 30
+            EffectsSystem.createParticle(sparkX, sparkY, vx, vy, 18, 350, 2.5, "orangeSpark")
+        end
     end
+
+    if sliceInfo.overlapStart then spawnSparksAtCut(sliceInfo.overlapStart) end
+    if sliceInfo.overlapEnd then spawnSparksAtCut(sliceInfo.overlapEnd) end
     
     return newBoundaries
 end
