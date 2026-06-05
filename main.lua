@@ -21,7 +21,7 @@ function love.load()
     
     -- Instantiate Scene Objects
     -- Entities.createPlayer(-820, 0)
-    Entities.createPlayer(-1655, 986)
+    Entities.createPlayer(-1135, 1505)
     -- Entities.createPlayer(-660, 400)
     
     -- Populating Physical Rigid Props
@@ -30,6 +30,9 @@ function love.load()
     Entities.createBox(-820, 300, 80, 30, 0, 0.6, 0.2)
     Entities.createBall(260, 430, 12.5, -700, 2, 0.5)
     Entities.createBall(-390, 150, 25, -15, 1, 0.1)
+    
+    
+    Entities.createBox(-1250, 700, 50, 50, 0, 100, 5, "", 10000000000)
     
     -- Grid Matrix Generator Setup (more boxes)
     for r = 0, 3 do
@@ -74,11 +77,19 @@ function love.load()
     WorldManager.createBoundary(-1485, 1605, 810, 10, 0)
     WorldManager.createBoundary(-1085, 1305, 10, 600, 0)
     
+    WorldManager.createBoundary(-885, 1605, 410, 10, 0)
+    WorldManager.createBoundary(-285, 1605, 410, 10, 0)
+    WorldManager.createBoundary(-485, 2005, 10, 800, 0)
+    WorldManager.createBoundary(-685, 2005, 10, 800, 0)
+    WorldManager.createBoundary(-585, 2400, 200, 10, 0)
+    
     -- Create water areas
-    Water.createArea(-1880, 850, 190, 150, 1.2, 0.9, "basic") 
-    Water.createArea(-1880, 1050, 790, 550, 1.1, 0.9, "deep") 
+    Water.createArea(-1880, 850, 190, 150, 0.8, 0.6, "basic") 
+    Water.createArea(-1880, 1050, 790, 550, 1.4, 1.2, "deep") 
+    Water.createArea(-680, 1650, 190, 750, 1.9, 1.5, "algae") 
     Whale.create(-1580, 1200, "baby", 45, 28)   
     Whale.create(-1480, 1300, "gentle", 45, 28)   
+    Whale.create(-585, 2100, "aggressive", 45, 28)   
     
     
     -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
@@ -221,24 +232,57 @@ function love.mousemoved(x, y)
     end
 end
 
-function love.keypressed(key)
-    
-    -- Number keys 1-9: set timer on touched explosive
-    local num = tonumber(key)
-    if num and num >= 1 and num <= 9 then
-        local player = Entities.player
-        if player and player.body then
-            local px, py = player.body:getPosition()
-            for _, e in ipairs(Entities.list) do
-                if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.body and not e.body:isDestroyed() then
-                    local ex, ey = e.body:getPosition()
-                    local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
-                    if dist < 40 then   -- contact range
-                        e.timer = num
-                        break
-                    end
+-- Helper function to avoid code duplication
+function setTimerOnTouchedExplosive(seconds)
+    local player = Entities.player
+    if player and player.body then
+        local px, py = player.body:getPosition()
+        for _, e in ipairs(Entities.list) do
+            if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.body and not e.body:isDestroyed() then
+                local ex, ey = e.body:getPosition()
+                local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
+                if dist < 40 then   -- contact range
+                    e.timer = seconds
+                    break
                 end
             end
+        end
+    end
+end
+
+local timer_input_buffer = ""
+local timer_input_time = 0
+
+function love.keypressed(key)
+    
+    -- Number keys 0-9: set timer on touched explosive (supports 1-2 digits)
+    local num = tonumber(key)
+    if num and num >= 0 and num <= 9 then
+        local current_time = love.timer.getTime()
+        
+        -- Clear buffer if it's been more than 1 second since last keypress
+        if current_time - timer_input_time > 1 then
+            timer_input_buffer = ""
+        end
+        
+        if key == "0" and timer_input_buffer == "" then
+            -- Leading zero: start buffer for "01", "02", etc.
+            timer_input_buffer = "0"
+            timer_input_time = current_time
+        elseif timer_input_buffer == "0" and num >= 1 and num <= 9 then
+            -- Complete two-digit number starting with 0 (01-09)
+            local seconds = tonumber("0" .. tostring(num))
+            setTimerOnTouchedExplosive(seconds)
+            timer_input_buffer = ""
+        elseif timer_input_buffer == "" then
+            -- First digit (1-9)
+            timer_input_buffer = tostring(num)
+            timer_input_time = current_time
+        else
+            -- Second digit (0-9) - complete two-digit number
+            local seconds = tonumber(timer_input_buffer .. tostring(num))
+            setTimerOnTouchedExplosive(seconds)
+            timer_input_buffer = ""
         end
     end
     
@@ -280,7 +324,32 @@ function love.keypressed(key)
         local player = Entities.player
         if player then
             Entities.mergeBoxesTouchingPlayer(player)
+            Entities.mergeExplosivesNearPlayer(player)
         end
+    elseif key == "g" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then
+        -- Shift+G: Create inert grenade (damageless)
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        local grenade = Entities.createGrenade(mx, my)
+        grenade.explosionDamage = 0
+        grenade.isInert = true
+        grenade.mergePower = 0  -- No merge bonus
+        -- Optional: Set a visual indicator (will be handled in draw)
+        
+    elseif key == "t" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then
+        -- Shift+T: Create inert TNT (damageless)
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        local tnt = Entities.createTNTBox(mx, my, 30, 30)
+        tnt.explosionDamage = 0
+        tnt.isInert = true
+        tnt.mergePower = 0
+        
+    elseif key == "n" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then
+        -- Shift+N: Create inert nuke (damageless)
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        local nuke = Entities.createNuke(mx, my)
+        nuke.explosionDamage = 0
+        nuke.isInert = true
+        nuke.mergePower = 0
     elseif key == "g" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
         Entities.createGrenade(mx, my)

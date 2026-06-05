@@ -25,7 +25,7 @@ local EXPLOSIVE_PRESETS = {
         label = "TNT"
     },
     nuke = {
-        radius = 800, damage = 2000, force = 500,
+        radius = 800, damage = 2000, force = 5000,
         width = 40, height = 120, mass = 5.0, friction = 0.5, restitution = 0.1,
         label = "NUKE"
     }
@@ -523,6 +523,123 @@ function Entities.explode(e)
     end
 end
 
+
+-- Merge explosives of the same type that are near the player
+function Entities.mergeExplosivesNearPlayer(player)
+    if not player or not player.body then return end
+    local px, py = player.body:getPosition()
+    local radius = 120  -- detection radius for explosives
+
+    -- Collect explosives by type
+    local explosivesByType = {
+        grenade = {},
+        tnt = {},
+        nuke = {}
+    }
+
+    for _, e in ipairs(Entities.list) do
+        if e.body and not e.body:isDestroyed() then
+            local ex, ey = e.body:getPosition()
+            local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
+            if dist < radius then
+                if e.type == "grenade" then
+                    table.insert(explosivesByType.grenade, e)
+                elseif e.type == "tnt" then
+                    table.insert(explosivesByType.tnt, e)
+                elseif e.type == "nuke" then
+                    table.insert(explosivesByType.nuke, e)
+                end
+            end
+        end
+    end
+
+    -- Process each type separately
+    for typ, list in pairs(explosivesByType) do
+        if #list >= 2 then
+            -- Compute weighted center (by damage or simply average)
+            local sumX, sumY = 0, 0
+            local totalDamage = 0
+            local totalForce = 0
+            local totalRadius = 0
+            local minTimer = nil
+            local mergeCount = #list
+
+            for _, e in ipairs(list) do
+                local ex, ey = e.body:getPosition()
+                sumX = sumX + ex
+                sumY = sumY + ey
+                totalDamage = totalDamage + e.explosionDamage
+                totalForce = totalForce + e.explosionForce
+                totalRadius = totalRadius + e.explosionRadius
+                if e.timer and e.timer > 0 then
+                    if minTimer == nil or e.timer < minTimer then
+                        minTimer = e.timer
+                    end
+                end
+            end
+
+            local centerX = sumX / #list
+            local centerY = sumY / #list
+
+            -- Optionally boost stats for merging 
+            local boost = 1 + (mergeCount - 1)
+            totalDamage = totalDamage * boost
+            totalForce = totalForce * boost
+            totalRadius = totalRadius * 0.8 + (totalRadius / #list) * 0.5  -- blend radius
+
+            -- Create the merged explosive (preserve original type)
+            local newExplosive
+            if typ == "grenade" then
+                newExplosive = Entities.createGrenade(centerX, centerY)
+                newExplosive.explosionDamage = totalDamage
+                newExplosive.explosionForce = totalForce
+                newExplosive.explosionRadius = math.min(300, totalRadius)  -- cap
+                newExplosive.mergeCount = mergeCount   -- store for visual effect
+                newExplosive.mergePower = mergeCount   -- for drawing
+            elseif typ == "tnt" then
+                newExplosive = Entities.createTNTBox(centerX, centerY, 30, 30)
+                newExplosive.explosionDamage = totalDamage
+                newExplosive.explosionForce = totalForce
+                newExplosive.explosionRadius = math.min(500, totalRadius)
+                newExplosive.mergeCount = mergeCount
+                newExplosive.mergePower = mergeCount
+            elseif typ == "nuke" then
+                newExplosive = Entities.createNuke(centerX, centerY)
+                newExplosive.explosionDamage = totalDamage
+                newExplosive.explosionForce = totalForce
+                newExplosive.explosionRadius = math.min(1200, totalRadius)
+                newExplosive.mergeCount = mergeCount
+                newExplosive.mergePower = mergeCount
+            end
+
+            if newExplosive then
+                -- Set timer to the smallest remaining timer from merged explosives
+                if minTimer then
+                    newExplosive.timer = math.max(0.1, minTimer)
+                end
+
+                -- Destroy all original explosives (ropes already handled in destroy)
+                for _, e in ipairs(list) do
+                    if e.body and not e.body:isDestroyed() then
+                        RopeSystem.destroyAllForObject(e)
+                        e.body:destroy()
+                        -- Remove from Entities.list
+                        for i, ent in ipairs(Entities.list) do
+                            if ent == e then
+                                table.remove(Entities.list, i)
+                                break
+                            end
+                        end
+                    end
+                end
+
+                -- Optional: Add a flash effect at merge location
+                EffectsSystem.createFlash(centerX, centerY, 50, 0.5)
+            end
+        end
+    end
+end
+
 function Entities.mergeBoxesTouchingPlayer(player)
     if not player or not player.body then return end
 
@@ -780,9 +897,14 @@ function Entities.draw()
                 love.graphics.line(x - e.r * cosA, y - e.r * sinA, x + e.r * cosA, y + e.r * sinA)
                 love.graphics.line(x - e.r * sinA, y + e.r * cosA, x + e.r * sinA, y - e.r * cosA)
                 love.graphics.setLineWidth(1)
-            elseif e.type == "grenade" then
-                love.graphics.setColor(0.25, 0.35, 0.2)  
-                love.graphics.circle("fill", x, y, e.w/2)
+                elseif e.type == "grenade" then
+                    love.graphics.setColor(0.25, 0.35, 0.2)  
+                    -- Darken based on merge count
+                    if e.mergePower and e.mergePower > 1 then
+                        local factor = 1 - math.min(0.6, (e.mergePower-1) * 0.15)
+                        love.graphics.setColor(0.25 * factor, 0.35 * factor, 0.2 * factor)
+                    end
+                    love.graphics.circle("fill", x, y, e.w/2)
                 -- love.graphics.setColor(0,0,0)
                 -- love.graphics.circle("line", x, y, e.w/2)
                 if e.timer and e.timer > 0 then
@@ -790,7 +912,12 @@ function Entities.draw()
                     love.graphics.print(string.format("%.1f", e.timer), x-4, y-12)
                 end
             elseif e.type == "tnt" then
-                love.graphics.setColor(0.7, 0.1, 0.05)
+                local r, g, b = 0.7, 0.1, 0.05
+                if e.mergePower and e.mergePower > 1 then
+                    local factor = 1 - math.min(0.5, (e.mergePower-1) * 0.12)
+                    r, g, b = r * factor, g * factor, b * factor
+                end
+                love.graphics.setColor(r, g, b)
                 love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))
                 love.graphics.setColor(0,0,0)
                 -- love.graphics.polygon("line", e.body:getWorldPoints(e.shape:getPoints()))
@@ -812,35 +939,75 @@ function Entities.draw()
                 local hw = w / 2
                 local hh = h / 2
                 
-                -- 1. Base Casing (Dark olive/military green)
-                love.graphics.setColor(0.3, 0.35, 0.3)
+                -- Calculate darkening factor based on merge count
+                local darkFactor = 1
+                if e.mergePower and e.mergePower > 1 then
+                    darkFactor = 1 - math.min(0.6, (e.mergePower - 1) * 0.12)
+                end
+                
+                -- 1. Base Casing (Military Olive Green) - darkened by merge count
+                love.graphics.setColor(0.28 * darkFactor, 0.32 * darkFactor, 0.24 * darkFactor)
                 love.graphics.rectangle("fill", -hw, -hh + 30, w, h - 50)
                 
-                -- 2. Nose Cone (Rounded tip pointing "up")
+                -- 2. Nose Cone (Dark olive, slightly metallic) - darkened by merge count
+                love.graphics.setColor(0.22 * darkFactor, 0.26 * darkFactor, 0.18 * darkFactor)
                 love.graphics.polygon("fill", -hw, -hh + 30, hw, -hh + 30, 0, -hh - 10)
                 
-                -- 3. Tail Section
+                -- 3. Tail Section (Dark military) - darkened by merge count
+                love.graphics.setColor(0.2 * darkFactor, 0.24 * darkFactor, 0.17 * darkFactor)
                 love.graphics.polygon("fill", -hw, hh - 20, hw, hh - 20, hw - 10, hh, -hw + 10, hh)
                 
-                -- 4. Tail Fins (Darker metal)
-                love.graphics.setColor(0.2, 0.25, 0.2)
-                love.graphics.polygon("fill", -hw, hh - 40, -hw - 20, hh, -hw, hh - 10) -- Left fin
-                love.graphics.polygon("fill", hw, hh - 40, hw + 20, hh, hw, hh - 10)  -- Right fin
+                -- 4. Tail Fins (Dark metal/olive) - darkened by merge count
+                love.graphics.setColor(0.18 * darkFactor, 0.21 * darkFactor, 0.15 * darkFactor)
+                love.graphics.polygon("fill", -hw, hh - 40, -hw - 18, hh, -hw, hh - 10) -- Left fin
+                love.graphics.polygon("fill", hw, hh - 40, hw + 18, hh, hw, hh - 10)  -- Right fin
                 
-                -- 5. Yellow Warning Stripe
-                love.graphics.setColor(0.8, 0.7, 0.1)
-                love.graphics.rectangle("fill", -hw, -hh + 40, w, 15)
+                -- 5. Yellow Warning Stripes (become more orange/red as darker)
+                if e.mergePower and e.mergePower > 2 then
+                    -- Very merged nukes have danger red stripes instead of yellow
+                    love.graphics.setColor(0.85, 0.2, 0.1)  -- Danger red
+                elseif e.mergePower and e.mergePower > 1 then
+                    -- Slightly merged: orange warning
+                    love.graphics.setColor(0.85, 0.55, 0.1)  -- Orange
+                else
+                    love.graphics.setColor(0.75, 0.65, 0.1)  -- Standard military caution yellow
+                end
+                love.graphics.rectangle("fill", -hw, -hh + 40, w, 12)
                 
-                -- Scale up the radiation text slightly
-                love.graphics.print("R", -8, -5, 0, 1.5, 1.5)
+                -- Black hazard stripes (clipped to body width) - always black
+                love.graphics.setColor(0.15, 0.15, 0.12)
+                local stripe_width = 8
+                local start_x = -hw
+                for i = 0, math.ceil(w / stripe_width) do
+                    local x_pos = start_x + (i * stripe_width)
+                    if x_pos + stripe_width/2 <= hw then
+                        love.graphics.polygon("fill", 
+                            x_pos, -hh + 40, 
+                            x_pos + stripe_width/2, -hh + 40,
+                            x_pos + stripe_width, -hh + 52,
+                            x_pos + stripe_width/2, -hh + 52)
+                    end
+                end
                 
                 love.graphics.pop()
                 
-                -- 6. Detonation Timer (Drawn outside rotation so it stays upright)
+                -- 7. Detonation Timer (Drawn outside rotation so it stays upright)
                 if e.timer and e.timer > 0 then
-                    love.graphics.setColor(1, 0, 0)
-                    love.graphics.print(string.format("DETONATION: %.1f", e.timer), x - 40, y - hh - 30)
+                    -- Military-style warning display
+                    local alpha = 1
+                    if e.timer < 3 then
+                        alpha = 0.5 + math.sin(love.timer.getTime() * 10) * 0.5  -- Blinking effect
+                    end
+                    love.graphics.setColor(0.9, 0.7, 0.1, alpha)
+                    love.graphics.print(string.format("FUSE: %.1f", e.timer), x - 35, y - hh - 30)
+                    
+                    -- Critical warning
+                    if e.timer < 2 then
+                        love.graphics.setColor(0.9, 0.2, 0.1, 0.8 + math.sin(love.timer.getTime() * 15) * 0.5)
+                        love.graphics.print("! ARMING FAST !", x - 45, y - hh - 48)
+                    end
                 end
+        
             else
                 love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))
             end
