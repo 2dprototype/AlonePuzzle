@@ -23,6 +23,11 @@ local EXPLOSIVE_PRESETS = {
         radius = 300, damage = 700, force = 80,
         width = 25, height = 25, mass = 1.5, friction = 0.4, restitution = 0.2,
         label = "TNT"
+    },
+    nuke = {
+        radius = 800, damage = 2000, force = 500,
+        width = 40, height = 120, mass = 5.0, friction = 0.5, restitution = 0.1,
+        label = "NUKE"
     }
 }
 
@@ -154,6 +159,29 @@ function Entities.createTNTBox(x, y, w, h)
     return tnt
 end
 
+function Entities.createNuke(x, y)
+    local p = EXPLOSIVE_PRESETS.nuke
+    local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
+    local shape = love.physics.newRectangleShape(p.width, p.height)
+    local fixture = love.physics.newFixture(body, shape, p.mass)
+    fixture:setFriction(p.friction)
+    fixture:setRestitution(p.restitution)
+    
+    local nuke = {
+        type = "nuke",
+        body = body, shape = shape, fixture = fixture,
+        w = p.width, h = p.height,
+        timer = nil,
+        explosionRadius = p.radius,
+        explosionDamage = p.damage,
+        explosionForce = p.force,
+        ropeIds = {},
+        damageFlash = 0
+    }
+    table.insert(Entities.list, nuke)
+    return nuke
+end
+
 function Entities.update(dt)
     -- Guard condition changed: Allow logic to run even if player is dead, as long as body exists
     if not Entities.player or not Entities.player.body or Entities.player.body:isDestroyed() then return end
@@ -247,7 +275,7 @@ function Entities.update(dt)
         elseif e.body and e.body:isActive() then
             if e.damageFlash then e.damageFlash = math.max(0, e.damageFlash - dt) end
             
-            if (e.type == "grenade" or e.type == "tnt") and e.timer and e.timer > 0 then
+            if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.timer and e.timer > 0 then
                 e.timer = e.timer - dt
                 if e.timer <= 0 then
                     Entities.explode(e)
@@ -350,18 +378,26 @@ function Entities.explode(e)
     local maxDamage = e.explosionDamage
     local maxForce = e.explosionForce
 
-    -- Intensity factor (0…1) based on both damage and force
+    local isNuke = (e.type == "nuke")
     local intensity = (maxDamage / 300) * 0.6 + (maxForce / 1000) * 0.4
     intensity = math.min(1, intensity)
+    -- if isNuke then intensity = 1.0 end
 
     -- 1. Bright flash (big damage effect line)
     EffectsSystem.createFlash(cx, cy, radius, intensity)
 
     -- 2. Shockwave ring
-    EffectsSystem.createShockwave(cx, cy, radius, intensity)
+    if isNuke then
+        for i = 1, 3 do
+            EffectsSystem.createShockwave(cx, cy, radius * (0.8 + i * 0.1), intensity)
+        end
+    else
+        EffectsSystem.createShockwave(cx, cy, radius, intensity)
+    end
 
     -- 3. Fireball core (large orange particles)
     local coreCount = 10 + math.floor(20 * intensity)
+    if isNuke then coreCount = 80 end
     for i = 1, coreCount do
         local angle = love.math.random() * math.pi * 2
         local dist = love.math.random(0, radius * 0.6)
@@ -375,6 +411,8 @@ function Entities.explode(e)
 
     -- 4. Sparks and embers (more = more damage)
     local sparkCount = 30 + math.floor(70 * intensity)
+    if isNuke then sparkCount = 200 end
+    
     for i = 1, sparkCount do
         local angle = love.math.random() * math.pi * 2
         local dist = love.math.random(5, radius)
@@ -389,6 +427,8 @@ function Entities.explode(e)
 
     -- 5. Debris chunks (small dark pieces)
     local debrisCount = 5 + math.floor(15 * intensity)
+    if isNuke then debrisCount = 50 end
+    
     for i = 1, debrisCount do
         local angle = love.math.random() * math.pi * 2
         local dist = love.math.random(0, radius * 0.8)
@@ -402,6 +442,8 @@ function Entities.explode(e)
 
     -- 6. Thick smoke cloud
     local smokeCount = 20 + math.floor(40 * intensity)
+    if isNuke then smokeCount = 150 end
+    
     for i = 1, smokeCount do
         local angle = love.math.random() * math.pi * 2
         local dist = love.math.random(0, radius * 0.9)
@@ -758,6 +800,46 @@ function Entities.draw()
                 if e.timer and e.timer > 0 then
                     love.graphics.setColor(1,1,0)
                     love.graphics.print(string.format("%.1f", e.timer), x-6, y-20)
+                end
+            elseif e.type == "nuke" then
+                love.graphics.push()
+                love.graphics.translate(x, y)
+                -- Rotate drawing to match the physics body
+                love.graphics.rotate(e.body:getAngle())
+                
+                local w = e.w
+                local h = e.h
+                local hw = w / 2
+                local hh = h / 2
+                
+                -- 1. Base Casing (Dark olive/military green)
+                love.graphics.setColor(0.3, 0.35, 0.3)
+                love.graphics.rectangle("fill", -hw, -hh + 30, w, h - 50)
+                
+                -- 2. Nose Cone (Rounded tip pointing "up")
+                love.graphics.polygon("fill", -hw, -hh + 30, hw, -hh + 30, 0, -hh - 10)
+                
+                -- 3. Tail Section
+                love.graphics.polygon("fill", -hw, hh - 20, hw, hh - 20, hw - 10, hh, -hw + 10, hh)
+                
+                -- 4. Tail Fins (Darker metal)
+                love.graphics.setColor(0.2, 0.25, 0.2)
+                love.graphics.polygon("fill", -hw, hh - 40, -hw - 20, hh, -hw, hh - 10) -- Left fin
+                love.graphics.polygon("fill", hw, hh - 40, hw + 20, hh, hw, hh - 10)  -- Right fin
+                
+                -- 5. Yellow Warning Stripe
+                love.graphics.setColor(0.8, 0.7, 0.1)
+                love.graphics.rectangle("fill", -hw, -hh + 40, w, 15)
+                
+                -- Scale up the radiation text slightly
+                love.graphics.print("R", -8, -5, 0, 1.5, 1.5)
+                
+                love.graphics.pop()
+                
+                -- 6. Detonation Timer (Drawn outside rotation so it stays upright)
+                if e.timer and e.timer > 0 then
+                    love.graphics.setColor(1, 0, 0)
+                    love.graphics.print(string.format("DETONATION: %.1f", e.timer), x - 40, y - hh - 30)
                 end
             else
                 love.graphics.polygon("fill", e.body:getWorldPoints(e.shape:getPoints()))

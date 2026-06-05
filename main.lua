@@ -230,7 +230,7 @@ function love.keypressed(key)
         if player and player.body then
             local px, py = player.body:getPosition()
             for _, e in ipairs(Entities.list) do
-                if (e.type == "grenade" or e.type == "tnt") and e.body and not e.body:isDestroyed() then
+                if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.body and not e.body:isDestroyed() then
                     local ex, ey = e.body:getPosition()
                     local dist = math.sqrt((px-ex)^2 + (py-ey)^2)
                     if dist < 40 then   -- contact range
@@ -287,6 +287,9 @@ function love.keypressed(key)
     elseif key == "t" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
         Entities.createTNTBox(mx, my, 30, 30)
+    elseif key == "n" then
+        local mx, my = Camera:screenToWorld(love.mouse.getPosition())
+        Entities.createNuke(mx, my)
     elseif key == "lshift" or key == "rshift" then
         local p = Entities.player
         if p and p.ropeIds and #p.ropeIds == 2 then
@@ -363,7 +366,7 @@ function drawDebugData()
     
     -- Draw explosive blast radii and timers
     for _, e in ipairs(Entities.list) do
-        if (e.type == "grenade" or e.type == "tnt") and e.body and not e.body:isDestroyed() then
+        if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.body and not e.body:isDestroyed() then
             local x, y = e.body:getPosition()
             -- Blast radius circle (semi-transparent red)
             love.graphics.setColor(1, 0, 0, 0.2)
