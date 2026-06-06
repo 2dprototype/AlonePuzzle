@@ -253,6 +253,7 @@ function Whale.update(dt, player, entities)
     
     for i = #Whale.whales, 1, -1 do
         local w = Whale.whales[i]
+        if w.dead then return end
         if not w.body or w.body:isDestroyed() then
             table.remove(Whale.whales, i)
             goto continue
@@ -289,14 +290,6 @@ function Whale.update(dt, player, entities)
 
         if w.inWater and not w.dead then
             Whale.updateAI(w, dt, player, waterArea)
-        elseif w.dead then
-            -- No AI, just additional damping to simulate dead body
-            w.body:applyForce(-vx * 0.5, -vy * 0.5)
-            -- Slowly rotate to upright
-            local angle = w.body:getAngle()
-            local targetAngle = (math.cos(angle) < 0) and math.pi or 0
-            local angleDiff = (targetAngle - angle + math.pi) % (2 * math.pi) - math.pi
-            w.body:applyTorque(angleDiff * w.body:getMass() * 2)
         end
         
         -- Attack only if whale is alive, aggressive, and player is valid/alive
@@ -392,7 +385,7 @@ function Whale.updateAI(whale, dt, player, waterArea)
         return
     end
 
-    -- ========== PATH FOLLOWING (wander or hunt) ==========
+-- ========== PATH FOLLOWING (wander or hunt) ==========
     if not whale.path or whale.pathIndex > #whale.path then
         whale.state = "idle"
         whale.stateTimer = love.math.random(3, 8)
@@ -632,15 +625,34 @@ function Whale.kill(whale)
     if not whale or whale.dead then return end
     whale.dead = true
     whale.state = "dead"
+
     -- Remove all ropes attached to this whale
     local RopeSystem = require("rope")
     RopeSystem.destroyAllForObject(whale)
-    -- Disable AI by setting state to dead; no movement forces will be applied
-    -- Also set linear damping higher to slow down gradually
-    if whale.body and not whale.body:isDestroyed() then
-        whale.body:setLinearDamping(2.0)
-        whale.body:setAngularDamping(1.0)
-    end
+
+    -- Reduce mass to 10% of original so it floats easily
+    local oldMass = whale.data.mass
+    local newMass = math.max(1, oldMass * 0.1)   -- at least 1 unit of mass
+    local area = whale.data.w * whale.data.h
+    local newDensity = newMass / area
+
+    -- Replace the fixture with a lighter one
+    local shape = whale.shape
+    local friction = whale.fixture:getFriction()
+    local restitution = whale.fixture:getRestitution()
+
+    whale.fixture:destroy()
+    whale.fixture = love.physics.newFixture(whale.body, shape, newDensity)
+    whale.fixture:setFriction(friction)
+    whale.fixture:setRestitution(restitution)
+
+    -- Reset damping – dead whales should drift to a stop naturally
+    whale.body:setLinearDamping(0.5)
+    whale.body:setAngularDamping(0.5)
+
+    -- Optional: give it a small random push so it doesn't stay frozen
+    -- (but not necessary)
+
     -- Create a splash effect
     local wx, wy = whale.body:getPosition()
     require("water").createSplash(wx, wy, 150)

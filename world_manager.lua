@@ -25,10 +25,10 @@ function WorldManager.registerEntity(entity)
     local x, y = entity.body:getPosition()
     local cx, cy = WorldManager.getChunkCoords(x, y)
     
-    WorldManager.spatialGrid[cx] = WorldManager.spatialGrid[cx] or {}
-    WorldManager.spatialGrid[cx][cy] = WorldManager.spatialGrid[cx][cy] or {}
+    -- WorldManager.spatialGrid[cx] = WorldManager.spatialGrid[cx] or {}
+    -- WorldManager.spatialGrid[cx][cy] = WorldManager.spatialGrid[cx][cy] or {}
     
-    table.insert(WorldManager.spatialGrid[cx][cy], entity)
+    -- table.insert(WorldManager.spatialGrid[cx][cy], entity)
     entity.currentChunkX = cx
     entity.currentChunkY = cy
 end

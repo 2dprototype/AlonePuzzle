@@ -2,6 +2,7 @@ local Config = require("config")
 local Camera = {
     x = 0, y = 0, scale = 1,
     mode = "follow_player",
+    followTarget = nil, 
     target = nil
 }
 
@@ -15,6 +16,13 @@ function Camera.update(dt, player, enemies)
         local enemy = enemies[1]
         if enemy and enemy.body and not enemy.body:isDestroyed() then
             local targetX, targetY = enemy.body:getPosition()
+            Camera.x = Camera.x + (targetX - Camera.x) * cfg.lerpSpeed
+            Camera.y = Camera.y + (targetY - Camera.y) * cfg.lerpSpeed
+        end
+    elseif Camera.mode == "follow_target" then
+        local target = Camera.followTarget
+        if target and target.body and not target.body:isDestroyed() then
+            local targetX, targetY = target.body:getPosition()
             Camera.x = Camera.x + (targetX - Camera.x) * cfg.lerpSpeed
             Camera.y = Camera.y + (targetY - Camera.y) * cfg.lerpSpeed
         end

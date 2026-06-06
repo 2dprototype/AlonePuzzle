@@ -10,7 +10,7 @@ local Whale = require("whale")
 
 local game = { debugMode = false, state = "playing" }
 local cameraInstructions = {
-    "F1: Follow Player", "F2: Follow Enemy", "F3: Free Move",
+    "F1: Follow Player", "F2: Object", "F3: Free Move",
     "Wheel or -/+: Zoom", "WASD: Free Move", "R: Reset Zoom",
     "F5: Toggle Debug Mode", "SPACE: Grab/Release Object",
     "E: Grab Enemy", "SHIFT: Connect two objects & detach"
@@ -32,12 +32,12 @@ function love.load()
     Entities.createBall(-390, 150, 25, -15, 1, 0.1)
     
     
-    Entities.createBox(-1250, 700, 50, 50, 0, 100, 5, "", 10000000000)
+    Entities.createBox(-1250, 700, 50, 50, 0, 100, 5, "", 1000000000)
     
 
     for r = 0, 3 do
         for c = 0, 2 do
-            Entities.createBox(-1600 + (c * 28), 800 - (r * 28), 28, 28, 0, 0.9, 0.2, string.format("Grid%d%d", c, r), 9600)
+            Entities.createBox(-1600 + (c * 30), 800 - (r * 30), 28, 28, 0, 0.5, 0.2, string.format("Grid%d%d", c, r), 600)
         end
     end
     
@@ -82,6 +82,11 @@ function love.load()
     WorldManager.createBoundary(-485, 2005, 10, 800, 0)
     WorldManager.createBoundary(-685, 2005, 10, 800, 0)
     WorldManager.createBoundary(-585, 2400, 200, 10, 0)
+    
+    
+    WorldManager.createBoundary(-1520, 555, 10, 530, 0)
+    WorldManager.createBoundary(-1465, 540, 10, 500, 0)
+    WorldManager.createBoundary(-1575, 680, 100, 10, 0)
     
     -- Create water areas
     Water.createArea(-1880, 850, 190, 150, 0.8, 0.6, "basic") 
@@ -218,6 +223,52 @@ function love.mousepressed(x, y, button, istouch)
             RopeSystem.destroyAllForObject(player)
         end
     end
+    
+    -- Camera target selection (only when in follow_target mode)
+    if button == 1 and Camera.mode == "follow_target" then
+        -- Find the closest entity under the mouse cursor
+        local closestEntity = nil
+        local minDist = 60   -- detection radius
+
+        -- Check regular entities
+        for _, e in ipairs(Entities.list) do
+            if e.body and not e.body:isDestroyed() then
+                local ex, ey = e.body:getPosition()
+                local dx, dy = worldX - ex, worldY - ey
+                local dist = math.sqrt(dx*dx + dy*dy)
+                local threshold = (e.r or math.max(e.w or 20, e.h or 20)) + 15
+                if dist < threshold and dist < minDist then
+                    minDist = dist
+                    closestEntity = e
+                end
+            end
+        end
+
+        -- Also check whales
+        if not closestEntity then
+            local whales = Whale.getAll()
+            for _, w in ipairs(whales) do
+                if w.body and not w.body:isDestroyed() then
+                    local wx, wy = w.body:getPosition()
+                    local dx, dy = worldX - wx, worldY - wy
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    local threshold = w.data.w / 2 + 20
+                    if dist < threshold and dist < minDist then
+                        minDist = dist
+                        closestEntity = w
+                    end
+                end
+            end
+			end
+
+        if closestEntity then
+            Camera.followTarget = closestEntity
+            print("Now following: " .. (closestEntity.type or "whale"))
+        else
+            print("No object clicked – target unchanged")
+        end
+    end
+
 end
 
 function love.mousemoved(x, y)
@@ -295,7 +346,7 @@ function love.keypressed(key)
     
     if key == "escape" then love.event.quit()
     elseif key == "f1" then Camera.mode = "follow_player"
-    elseif key == "f2" then Camera.mode = "follow_enemy"
+    elseif key == "f2" then  Camera.mode = "follow_target"
     elseif key == "f3" then Camera.mode = "free_move"
     elseif key == "=" or key == "+" then Camera.scale = math.min(Camera.scale + 0.1, Config.camera.maxScale)
     elseif key == "-" or key == "_" then Camera.scale = math.max(Camera.scale - 0.1, Config.camera.minScale)
@@ -339,8 +390,8 @@ function love.keypressed(key)
         local grenade = Entities.createGrenade(mx, my)
         grenade.explosionDamage = 0
         grenade.isInert = true
-        grenade.mergePower = 0  -- No merge bonus
-        -- Optional: Set a visual indicator (will be handled in draw)
+        grenade.mergePower = 0 
+        grenade.sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
         
     elseif key == "t" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then
         -- Shift+T: Create inert TNT (damageless)
@@ -349,6 +400,7 @@ function love.keypressed(key)
         tnt.explosionDamage = 0
         tnt.isInert = true
         tnt.mergePower = 0
+        tnt.sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
         
     elseif key == "n" and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift")) then
         -- Shift+N: Create inert nuke (damageless)
@@ -357,6 +409,7 @@ function love.keypressed(key)
         nuke.explosionDamage = 0
         nuke.isInert = true
         nuke.mergePower = 0
+        nuke.sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
     elseif key == "g" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
         local sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
@@ -467,7 +520,7 @@ function drawDebugData()
             end
             -- Show damage/force values
             love.graphics.setColor(1, 1, 1, 0.8)
-            love.graphics.print(string.format("Dmg:%d Force:%d", e.explosionDamage, e.explosionForce), x - 20, y + e.explosionRadius + 5)
+            love.graphics.print(string.format("Dmg:%d Force:%d Sensi:%d", e.explosionDamage, e.explosionForce, e.sensitivity), x - 20, y + e.explosionRadius + 5)
         end
     end
     love.graphics.setLineWidth(1)

@@ -302,9 +302,9 @@ function Entities.update(dt)
     
     for i = #Entities.list, 1, -1 do
         local e = Entities.list[i]
-        if e.body and e.body:isDestroyed() then
+        if e and e.body and e.body:isDestroyed() then
             table.remove(Entities.list, i)
-        elseif e.body and e.body:isActive() then
+        elseif e and e.body and e.body:isActive() then
             if e.damageFlash then e.damageFlash = math.max(0, e.damageFlash - dt) end
             
             if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.timer and e.timer > 0 then
@@ -382,10 +382,9 @@ function Entities.applyDamage(e, dmg)
             e.dead = true
             e.body:setLinearVelocity(0, 0)
             e.body:setAngularVelocity(0)
-            -- if e.fixture and not e.fixture:isDestroyed() then
-                -- e.fixture:setSensor(true) -- Turns off collisions so things pass through gracefully
-            -- end
-            RopeSystem.destroyAllForObject(e) -- Snaps ropes attached to the dead player
+            RopeSystem.destroyAllForObject(e)
+        elseif e.type == "whale" then
+            Whale.kill(e)
         else
             Entities.destroy(e) 
         end
@@ -670,6 +669,7 @@ function Entities.mergeExplosivesNearPlayer(player)
             local totalDamage = 0
             local totalForce = 0
             local totalRadius = 0
+            local totalSensitivity = 0
             local minTimer = nil
             local mergeCount = #list
 
@@ -680,6 +680,7 @@ function Entities.mergeExplosivesNearPlayer(player)
                 totalDamage = totalDamage + e.explosionDamage
                 totalForce = totalForce + e.explosionForce
                 totalRadius = totalRadius + e.explosionRadius
+                totalSensitivity = totalSensitivity + e.sensitivity
                 if e.timer and e.timer > 0 then
                     if minTimer == nil or e.timer < minTimer then
                         minTimer = e.timer
@@ -691,9 +692,9 @@ function Entities.mergeExplosivesNearPlayer(player)
             local centerY = sumY / #list
 
             -- Optionally boost stats for merging 
-            local boost = 1 + (mergeCount - 1)
-            totalDamage = totalDamage * boost
-            totalForce = totalForce * boost
+            -- local boost = 1 + (mergeCount - 1)
+            -- totalDamage = totalDamage * boost
+            -- totalForce = totalForce * boost
             totalRadius = totalRadius * 0.8 + (totalRadius / #list) * 0.5  -- blend radius
 
             -- Create the merged explosive (preserve original type)
@@ -705,6 +706,7 @@ function Entities.mergeExplosivesNearPlayer(player)
                 newExplosive.explosionRadius = math.min(300, totalRadius)  -- cap
                 newExplosive.mergeCount = mergeCount   -- store for visual effect
                 newExplosive.mergePower = mergeCount   -- for drawing
+                newExplosive.sensitivity = totalSensitivity
             elseif typ == "tnt" then
                 newExplosive = Entities.createTNTBox(centerX, centerY, 30, 30)
                 newExplosive.explosionDamage = totalDamage
@@ -712,6 +714,7 @@ function Entities.mergeExplosivesNearPlayer(player)
                 newExplosive.explosionRadius = math.min(500, totalRadius)
                 newExplosive.mergeCount = mergeCount
                 newExplosive.mergePower = mergeCount
+                newExplosive.sensitivity = totalSensitivity
             elseif typ == "nuke" then
                 newExplosive = Entities.createNuke(centerX, centerY)
                 newExplosive.explosionDamage = totalDamage
@@ -719,6 +722,7 @@ function Entities.mergeExplosivesNearPlayer(player)
                 newExplosive.explosionRadius = math.min(1200, totalRadius)
                 newExplosive.mergeCount = mergeCount
                 newExplosive.mergePower = mergeCount
+                newExplosive.sensitivity = totalSensitivity
             end
 
             if newExplosive then
@@ -984,6 +988,23 @@ function Entities.checkCollisions()
     end
 end
 
+function formatNumber(n, d)
+    d = d or 1
+    if n == 0 then return "0" end
+    local s = n < 0 and "-" or ""
+    local a = math.abs(n)
+    local i = a >= 1e15 and 5 or a >= 1e12 and 4 or a >= 1e9 and 3 or a >= 1e6 and 2 or a >= 1e3 and 1 or 0
+    local suffixes = {"", "K", "M", "B", "T", "Q"}
+    if i == 0 then
+        return s .. (d == 0 and tostring(math.floor(a)) or string.format("%."..d.."f", a))
+    end
+    local v = a / (10^(i*3))
+    local f = 10^d
+    v = math.floor(v * f + 0.5) / f
+    if d == 0 then v = math.floor(v) end
+    return s .. tostring(v) .. suffixes[i+1]
+end
+
 function Entities.draw()
     for _, e in ipairs(Entities.list) do
         if e.body and not e.body:isDestroyed() and e.body:isActive() then
@@ -1031,8 +1052,8 @@ function Entities.draw()
                 love.graphics.setColor(0,0,0)
                 -- love.graphics.polygon("line", e.body:getWorldPoints(e.shape:getPoints()))
                 love.graphics.print("TNT", x-8, y-5)
-                love.graphics.print("" .. e.explosionForce, x-8, y-14)
-                love.graphics.print("" .. e.explosionDamage, x-8, y+4)
+                love.graphics.print(formatNumber(e.explosionForce), x-8, y-14)
+                love.graphics.print(formatNumber(e.explosionDamage), x-8, y+4)
                 if e.timer and e.timer > 0 then
                     love.graphics.setColor(1,1,0)
                     love.graphics.print(string.format("%.1f", e.timer), x-6, y-20)
