@@ -49,9 +49,16 @@ function WorldManager.optimizeActiveChunks(cameraX, cameraY)
 
     for cx, col in pairs(WorldManager.spatialGrid) do
         for cy, entities in pairs(col) do
+            -- 1. Calculate if this specific chunk is within the active radius
+            local shouldBeActive = (math.abs(cx - ccx) <= radius) and (math.abs(cy - ccy) <= radius)
+            
             for _, entity in ipairs(entities) do
                 if entity.body and not entity.body:isDestroyed() and entity.body:getType() == "dynamic" then
-                    entity.body:setActive(true)
+                    -- 2. CRITICAL FIX: Only call setActive if the state actually needs to change!
+                    -- This prevents Box2D from wiping the contact manifolds of resting objects.
+                    if entity.body:isActive() ~= shouldBeActive then
+                        entity.body:setActive(shouldBeActive)
+                    end
                 end
             end
         end

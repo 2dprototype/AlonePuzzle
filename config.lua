@@ -4,7 +4,7 @@ local Config = {
     physics = {
         meter = 64,
         gravityY = 9.81 * 64,
-        -- gravityY = 0,
+        -- gravityY = 10,
         linearDamping = 8.0,
         angularDamping = 8.0
     },
@@ -22,13 +22,13 @@ local Config = {
         height = 25,
         mass = 1.0,
         friction = 0.1,
-        restitution = 0.2,
+        restitution = 0.48,
         maxHealth = 10000000,
         moveForceX = 30,
-        moveForceYUp = -90,
-        moveForceYDown = 20,
-        torqueForce = 45,
-        stabilizationTorque = -30,
+        moveForceYUp = -80,
+        moveForceYDown = 30,
+        torqueForce = 50,
+        stabilizationTorque = -20,
         stabilizationDamping = -2.5,
         thrusterCooldown = 0.03
     },

@@ -17,17 +17,17 @@ local EXPLOSIVE_PRESETS = {
     grenade = {
         radius = 150, damage = 10, force = 25,
         width = 12, height = 12, mass = 0.8, friction = 0.3, restitution = 0.4,
-        label = "GRE"
+        label = "GRE", sensitivity = 0
     },
     tnt = {
         radius = 300, damage = 700, force = 80,
         width = 25, height = 25, mass = 1.5, friction = 0.4, restitution = 0.2,
-        label = "TNT"
+        label = "TNT", sensitivity = 0
     },
     nuke = {
         radius = 800, damage = 2000, force = 5000,
         width = 40, height = 120, mass = 5.0, friction = 0.5, restitution = 0.1,
-        label = "NUKE"
+        label = "NUKE", sensitivity = 0
     }
 }
 
@@ -101,7 +101,7 @@ function Entities.createEnemy(x, y, w, h, angle)
     fixture:setFriction(cfg.friction)
     fixture:setRestitution(cfg.restitution)
     
-    local maxHp = math.max(10, math.floor((w * h) / 3))
+    local maxHp = 10000000000
     local enemy = {
         type = "enemy", body = body, shape = shape, fixture = fixture,
         w = w, h = h, particles = {}, ropeIds = {}, health = maxHp, maxHealth = maxHp,
@@ -111,7 +111,7 @@ function Entities.createEnemy(x, y, w, h, angle)
     return enemy
 end
 
-function Entities.createGrenade(x, y)
+function Entities.createGrenade(x, y, sensitivity)
     local p = EXPLOSIVE_PRESETS.grenade
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
     local shape = love.physics.newRectangleShape(p.width, p.height)
@@ -123,18 +123,19 @@ function Entities.createGrenade(x, y)
         type = "grenade",
         body = body, shape = shape, fixture = fixture,
         w = p.width, h = p.height,
-        timer = nil,                -- seconds until explosion
+        timer = nil,
         explosionRadius = p.radius,
         explosionDamage = p.damage,
         explosionForce = p.force,
         ropeIds = {},
-        damageFlash = 0
+        damageFlash = 0,
+        sensitivity = sensitivity or p.sensitivity  -- default from preset if nil
     }
     table.insert(Entities.list, grenade)
     return grenade
 end
 
-function Entities.createTNTBox(x, y, w, h)
+function Entities.createTNTBox(x, y, w, h, sensitivity)
     w = w or 30
     h = h or 30
     local p = EXPLOSIVE_PRESETS.tnt
@@ -153,13 +154,14 @@ function Entities.createTNTBox(x, y, w, h)
         explosionDamage = p.damage,
         explosionForce = p.force,
         ropeIds = {},
-        damageFlash = 0
+        damageFlash = 0,
+        sensitivity = sensitivity or p.sensitivity
     }
     table.insert(Entities.list, tnt)
     return tnt
 end
 
-function Entities.createNuke(x, y)
+function Entities.createNuke(x, y, sensitivity)
     local p = EXPLOSIVE_PRESETS.nuke
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
     local shape = love.physics.newRectangleShape(p.width, p.height)
@@ -176,7 +178,8 @@ function Entities.createNuke(x, y)
         explosionDamage = p.damage,
         explosionForce = p.force,
         ropeIds = {},
-        damageFlash = 0
+        damageFlash = 0,
+        sensitivity = sensitivity or p.sensitivity
     }
     table.insert(Entities.list, nuke)
     return nuke
@@ -246,7 +249,7 @@ function Entities.update(dt)
             EffectsSystem.createParticle(bx, by, love.math.random(-5, 5), love.math.random(-2, 2), 20, 150, 1, "smoke")
         end
         
-        p.body:applyTorque(-p.body:getAngle() * pCfg.torqueForce - p.body:getAngularVelocity() * 2.5)
+        -- p.body:applyTorque(-p.body:getAngle() * pCfg.torqueForce - p.body:getAngularVelocity() * 2.5)
         if love.keyboard.isDown("pageup") then p.body:applyTorque(-pCfg.torqueForce) end
         if love.keyboard.isDown("pagedown") then p.body:applyTorque(pCfg.torqueForce) end
     else
@@ -255,6 +258,35 @@ function Entities.update(dt)
         p.body:setLinearVelocity(vx * 0.95, vy * 0.95)
     end
     
+    -- Player Autopilot Velocity Stabilization
+    if Entities.player and Entities.player.autopilotEnabled and Entities.player.body and not Entities.player.body:isDestroyed() then
+        local body = Entities.player.body
+        local mass = body:getMass()
+        local vx, vy = body:getLinearVelocity()
+        local av = body:getAngularVelocity()
+        local gx, gy = body:getWorld():getGravity()
+        
+        -- 1. Cancel gravity so the player hovers instead of drifting downward
+        local forceX = -gx * mass
+        local forceY = -gy * mass
+        
+        -- 2. Apply Reverse Forces based on current velocity
+        -- Tweak brakePower: 10.0 is strong. Don't go above 30-40 or the physics might jitter.
+        local brakePower = 10.0 
+        forceX = forceX - (vx * mass * brakePower)
+        forceY = forceY - (vy * mass * brakePower)
+        
+        body:applyForce(forceX, forceY)
+        
+        -- 3. Apply Reverse Torque to stop spinning and gently pull upright
+        local currentAngle = body:getAngle()
+        currentAngle = (currentAngle + math.pi) % (2 * math.pi) - math.pi
+        
+        local spinBrake = -av * mass * 15.0
+        local uprightCorrection = -currentAngle * mass * 5.0
+        
+        body:applyTorque(spinBrake + uprightCorrection)
+    end
 
     local px, py = p.body:getPosition()
     local waterArea = Water.isPointInWater(px, py)
@@ -305,6 +337,9 @@ function Entities.update(dt)
                 end
                 e.body:applyTorque(-e.body:getAngle() * 30 - e.body:getAngularVelocity() * 2.5)
             end
+            
+            Entities.checkSensitiveExplosives()
+                
         end
     end
 end
@@ -369,6 +404,80 @@ function Entities.destroy(e)
         EffectsSystem.createDamageEffect(ex - 15, ey, ex + 15, ey)
     end
     e.body:destroy()
+end
+
+function Entities.checkSensitiveExplosives()
+    local sensitiveBodies = {}
+    local hasExplosives = false
+    
+    -- 1. Build lookup table
+    for _, e in ipairs(Entities.list) do
+        if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") 
+           and e.body and not e.body:isDestroyed() 
+           and e.sensitivity and e.sensitivity > 0 then
+            
+            sensitiveBodies[e.body] = e
+            hasExplosives = true
+        end
+    end
+    
+    if not hasExplosives then return end
+
+    local contacts = WorldManager.world:getContacts()
+    if not contacts then return end
+
+    -- 2. Create a queue for things that need to explode
+    local explosivesToDetonate = {}
+
+    -- 3. Safely process contacts
+    for _, contact in ipairs(contacts) do
+        -- CRITICAL FIX: Check if contact is destroyed BEFORE calling isEnabled()
+        if not contact:isDestroyed() and contact:isEnabled() and contact:isTouching() then
+            local fa, fb = contact:getFixtures()
+            
+            -- Extra safety: make sure fixtures weren't destroyed mid-step
+            if fa and fb and not fa:isDestroyed() and not fb:isDestroyed() then
+                local bodyA = fa:getBody()
+                local bodyB = fb:getBody()
+                
+                local explosiveA = sensitiveBodies[bodyA]
+                local explosiveB = sensitiveBodies[bodyB]
+                
+                if explosiveA or explosiveB then
+                    local normalX, normalY = contact:getNormal()
+                    local x1, y1 = contact:getPositions()
+                    
+                    if x1 and y1 then
+                        local vAx, vAy = bodyA:getLinearVelocityFromWorldPoint(x1, y1)
+                        local vBx, vBy = bodyB:getLinearVelocityFromWorldPoint(x1, y1)
+                        
+                        local relVelX = vAx - vBx
+                        local relVelY = vAy - vBy
+                        local impactSpeed = math.abs(relVelX * normalX + relVelY * normalY)
+                        
+                        -- Queue Explosive A
+                        if explosiveA and not explosivesToDetonate[explosiveA] then
+                            if impactSpeed > (explosiveA.sensitivity * 200) then
+                                explosivesToDetonate[explosiveA] = true
+                            end
+                        end
+                        
+                        -- Queue Explosive B
+                        if explosiveB and not explosivesToDetonate[explosiveB] then
+                            if impactSpeed > (explosiveB.sensitivity * 200) then
+                                explosivesToDetonate[explosiveB] = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- 4. Execute detonations AFTER the physics loop is completely done
+    for explosive, _ in pairs(explosivesToDetonate) do
+        Entities.explode(explosive)
+    end
 end
 
 function Entities.explode(e)

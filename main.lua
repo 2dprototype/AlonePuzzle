@@ -21,8 +21,8 @@ function love.load()
     
     -- Instantiate Scene Objects
     -- Entities.createPlayer(-820, 0)
-    Entities.createPlayer(-1135, 1505)
-    -- Entities.createPlayer(-660, 400)
+    -- Entities.createPlayer(-1135, 1505)
+    Entities.createPlayer(-1385, 800)
     
     -- Populating Physical Rigid Props
     Entities.createBox(-800, 570, 8, 80, 0, 2, 0.2)
@@ -34,22 +34,22 @@ function love.load()
     
     Entities.createBox(-1250, 700, 50, 50, 0, 100, 5, "", 10000000000)
     
-    -- Grid Matrix Generator Setup (more boxes)
+
     for r = 0, 3 do
         for c = 0, 2 do
-            Entities.createBox(-1600 + (c * 30), 660 - (r * 30), 28, 28, 0, 0.1, 0.2, string.format("Grid%d%d", c, r), 600)
+            Entities.createBox(-1600 + (c * 28), 800 - (r * 28), 28, 28, 0, 0.9, 0.2, string.format("Grid%d%d", c, r), 9600)
         end
     end
     
     -- Add more boxes to make the map interesting
-    Entities.createBox(-900, 400, 20, 20, 0, 1.5, 0.3, "box1", 1000)
-    Entities.createBox(-750, 350, 15, 40, 0.5, 1.2, 0.2, "box2", 1000)
-    Entities.createBox(-1000, 600, 25, 25, 0, 2.0, 0.1, "box3",  1000)
-    Entities.createBox(-1100, 650, 12, 60, 0.3, 0.8, 0.4, "box4", 1000)
+    -- Entities.createBox(-900, 400, 20, 20, 0, 1.5, 0.3, "box1", 1000)
+    -- Entities.createBox(-750, 350, 15, 40, 0.5, 1.2, 0.2, "box2", 1000)
+    -- Entities.createBox(-1000, 600, 25, 25, 0, 2.0, 0.1, "box3",  1000)
+    -- Entities.createBox(-1100, 650, 12, 60, 0.3, 0.8, 0.4, "box4", 1000)
     
     -- Add more balls
     Entities.createBall(-1590, 1000, 28, 0, 0.1, 0.8)
-    Entities.createBall(-1300, 1000, 30, 0, 0.05, 0.8)
+    Entities.createBall(-1300, 1000, 30, 0, 776, 0.8)
     
     -- Enemies
     -- Entities.createEnemy(-8900, -520, 12.5, 25, 0)
@@ -87,6 +87,7 @@ function love.load()
     Water.createArea(-1880, 850, 190, 150, 0.8, 0.6, "basic") 
     Water.createArea(-1880, 1050, 790, 550, 1.4, 1.2, "deep") 
     Water.createArea(-680, 1650, 190, 750, 1.9, 1.5, "algae") 
+    
     Whale.create(-1580, 1200, "baby", 45, 28)   
     Whale.create(-1480, 1300, "gentle", 45, 28)   
     Whale.create(-585, 2100, "aggressive", 45, 28)   
@@ -117,13 +118,19 @@ end
 function love.update(dt)
     if game.state ~= "playing" then return end
     
-    WorldManager.world:update(dt)
-    Entities.update(dt)
+    -- Fix: Clamp the delta time to a maximum of 1/30th of a second.
+    -- This prevents lag spikes from embedding bodies into the floor.
+    local physicsDt = math.min(dt, 0.033)
+    
+    WorldManager.world:update(physicsDt)
+    Entities.update(physicsDt)
+    Whale.update(physicsDt, Entities.player, Entities.list)
+    
+    -- (The rest of your update code remains unchanged)
     Water.update(Entities.list)
-    Whale.update(dt, Entities.player, Entities.list)
     Entities.checkCollisions()
     RopeSystem.updateVisuals()
-    EffectsSystem.update(dt)
+    EffectsSystem.update(dt) -- Visuals can use regular dt
     Camera.update(dt, Entities.player, Entities.list)
     
     -- Throttled Spatial Grid Chunk Optimization Processing Block
@@ -352,14 +359,21 @@ function love.keypressed(key)
         nuke.mergePower = 0
     elseif key == "g" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
-        Entities.createGrenade(mx, my)
+        local sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
+        Entities.createGrenade(mx, my, sensitivity)
     elseif key == "t" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
-        Entities.createTNTBox(mx, my, 30, 30)
+        local sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
+        Entities.createTNTBox(mx, my, 30, 30, sensitivity)
     elseif key == "n" then
         local mx, my = Camera:screenToWorld(love.mouse.getPosition())
-        Entities.createNuke(mx, my)
-    elseif key == "lshift" or key == "rshift" then
+        local sensitivity = love.keyboard.isDown("lctrl") and 0.5 or 0
+        Entities.createNuke(mx, my, sensitivity)
+    elseif key == "k" then
+        if Entities.player and Entities.player.body and not Entities.player.body:isDestroyed() then
+            Entities.player.autopilotEnabled = not Entities.player.autopilotEnabled
+        end
+    elseif key == "lshift" then
         local p = Entities.player
         if p and p.ropeIds and #p.ropeIds == 2 then
             local ids = {}
@@ -434,13 +448,14 @@ function drawDebugData()
     end
     
     -- Draw explosive blast radii and timers
+    love.graphics.setLineWidth(0.5)
     for _, e in ipairs(Entities.list) do
         if (e.type == "grenade" or e.type == "tnt" or e.type == "nuke") and e.body and not e.body:isDestroyed() then
             local x, y = e.body:getPosition()
             -- Blast radius circle (semi-transparent red)
-            love.graphics.setColor(1, 0, 0, 0.2)
+            love.graphics.setColor(1, 0, 0, 0.09)
             love.graphics.circle("fill", x, y, e.explosionRadius)
-            love.graphics.setColor(1, 0, 0, 0.6)
+            love.graphics.setColor(1, 0, 0, 0.17)
             love.graphics.circle("line", x, y, e.explosionRadius)
             -- Timer info
             if e.timer and e.timer > 0 then
@@ -455,4 +470,5 @@ function drawDebugData()
             love.graphics.print(string.format("Dmg:%d Force:%d", e.explosionDamage, e.explosionForce), x - 20, y + e.explosionRadius + 5)
         end
     end
+    love.graphics.setLineWidth(1)
 end
