@@ -114,22 +114,29 @@ end
 function Entities.createGrenade(x, y, sensitivity)
     local p = EXPLOSIVE_PRESETS.grenade
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
-    local shape = love.physics.newRectangleShape(p.width, p.height)
+    
+    -- Create a circular shape using half of the preset width as the radius
+    local radius = p.width / 2
+    local shape = love.physics.newCircleShape(radius)
+    
     local fixture = love.physics.newFixture(body, shape, p.mass)
     fixture:setFriction(p.friction)
     fixture:setRestitution(p.restitution)
     
     local grenade = {
         type = "grenade",
-        body = body, shape = shape, fixture = fixture,
-        w = p.width, h = p.height,
+        body = body, 
+        shape = shape, 
+        fixture = fixture,
+        w = p.width, 
+        h = p.height,
         timer = nil,
         explosionRadius = p.radius,
         explosionDamage = p.damage,
         explosionForce = p.force,
         ropeIds = {},
         damageFlash = 0,
-        sensitivity = sensitivity or p.sensitivity  -- default from preset if nil
+        sensitivity = sensitivity or p.sensitivity
     }
     table.insert(Entities.list, grenade)
     return grenade
@@ -164,14 +171,54 @@ end
 function Entities.createNuke(x, y, sensitivity)
     local p = EXPLOSIVE_PRESETS.nuke
     local body = love.physics.newBody(WorldManager.world, x, y, "dynamic")
-    local shape = love.physics.newRectangleShape(p.width, p.height)
-    local fixture = love.physics.newFixture(body, shape, p.mass)
-    fixture:setFriction(p.friction)
-    fixture:setRestitution(p.restitution)
+    
+    local w = p.width
+    local h = p.height
+    local hw = w / 2
+    local hh = h / 2
+
+    -- Array to hold all the parts of our compound body
+    local fixtures = {}
+
+    -- 1. Base Casing
+    -- Offset the rectangle to match: -hh + 30 to h - 50
+    local baseY = (-hh + 30) + ((h - 50) / 2)
+    local baseShape = love.physics.newRectangleShape(0, baseY, w, h - 50)
+    local baseFixture = love.physics.newFixture(body, baseShape, p.mass * 0.5)
+    table.insert(fixtures, baseFixture)
+
+    -- 2. Nose Cone (Triangle)
+    local noseShape = love.physics.newPolygonShape(-hw, -hh + 30, hw, -hh + 30, 0, -hh - 10)
+    local noseFixture = love.physics.newFixture(body, noseShape, p.mass * 0.15)
+    table.insert(fixtures, noseFixture)
+
+    -- 3. Tail Section (Trapezoid)
+    local tailShape = love.physics.newPolygonShape(-hw, hh - 20, hw, hh - 20, hw - 10, hh, -hw + 10, hh)
+    local tailFixture = love.physics.newFixture(body, tailShape, p.mass * 0.15)
+    table.insert(fixtures, tailFixture)
+
+    -- -- 4. Left Fin (Triangle)
+    -- local leftFinShape = love.physics.newPolygonShape(-hw, hh - 40, -hw - 18, hh, -hw, hh - 10)
+    -- local leftFinFixture = love.physics.newFixture(body, leftFinShape, p.mass * 0.1)
+    -- table.insert(fixtures, leftFinFixture)
+
+    -- -- 5. Right Fin (Triangle)
+    -- local rightFinShape = love.physics.newPolygonShape(hw, hh - 40, hw + 18, hh, hw, hh - 10)
+    -- local rightFinFixture = love.physics.newFixture(body, rightFinShape, p.mass * 0.1)
+    -- table.insert(fixtures, rightFinFixture)
+
+    -- Apply physics properties to all parts
+    for _, f in ipairs(fixtures) do
+        f:setFriction(p.friction)
+        f:setRestitution(p.restitution)
+    end
     
     local nuke = {
         type = "nuke",
-        body = body, shape = shape, fixture = fixture,
+        body = body, 
+        shape = baseShape,           -- Keep base shape for fallback references
+        fixtures = fixtures,         -- Store the full array of parts
+        fixture = baseFixture,       -- Set main fixture to avoid breaking legacy code
         w = p.width, h = p.height,
         timer = nil,
         explosionRadius = p.radius,
@@ -338,10 +385,10 @@ function Entities.update(dt)
                 e.body:applyTorque(-e.body:getAngle() * 30 - e.body:getAngularVelocity() * 2.5)
             end
             
-            Entities.checkSensitiveExplosives()
                 
         end
     end
+    Entities.checkSensitiveExplosives()
 end
 
 function Entities.grab(isEnemyOnly)
@@ -1052,8 +1099,8 @@ function Entities.draw()
                 love.graphics.setColor(0,0,0)
                 -- love.graphics.polygon("line", e.body:getWorldPoints(e.shape:getPoints()))
                 love.graphics.print("TNT", x-8, y-5)
-                love.graphics.print(formatNumber(e.explosionForce), x-8, y-14)
-                love.graphics.print(formatNumber(e.explosionDamage), x-8, y+4)
+                -- love.graphics.print(formatNumber(e.explosionForce), x-8, y-14)
+                -- love.graphics.print(formatNumber(e.explosionDamage), x-8, y+4)
                 if e.timer and e.timer > 0 then
                     love.graphics.setColor(1,1,0)
                     love.graphics.print(string.format("%.1f", e.timer), x-6, y-20)

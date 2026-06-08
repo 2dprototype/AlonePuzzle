@@ -7,8 +7,10 @@ local EffectsSystem = require("effects")
 local Entities = require("entities")
 local Water = require("water")
 local Whale = require("whale")
+local b2debugDraw = require("b2debugDraw")
 
 local game = { debugMode = false, state = "playing" }
+local debugDrawEnabled = false
 local cameraInstructions = {
     "F1: Follow Player", "F2: Object", "F3: Free Move",
     "Wheel or -/+: Zoom", "WASD: Free Move", "R: Reset Zoom",
@@ -157,16 +159,29 @@ function love.draw()
     local smallFont = love.graphics.newFont(8)
     love.graphics.setFont(smallFont)
     
-    Entities.draw()
-    RopeSystem.drawAll(game.debugMode)
-    EffectsSystem.draw()
-    Whale.draw(game.debugMode)
-    Water.draw()
-    WorldManager.drawBoundaries()
+    if debugDrawEnabled then
+        local width = love.graphics.getWidth()
+        local height = love.graphics.getHeight()
+        local topLeftX = Camera.x - (width/2) / Camera.scale
+        local topLeftY = Camera.y - (height/2) / Camera.scale
+        local viewWidth = width / Camera.scale
+        local viewHeight = height / Camera.scale
+        
+        b2debugDraw(WorldManager.world, topLeftX, topLeftY, viewWidth, viewHeight)
+        EffectsSystem.draw()
+        Water.draw()
+    else
+        Entities.draw()
+        RopeSystem.drawAll(game.debugMode)
+        EffectsSystem.draw()
+        Whale.draw(game.debugMode)
+        Water.draw()
+        WorldManager.drawBoundaries()
+    end
     
     love.graphics.setFont(oldFont)
     if game.debugMode then drawDebugData() end
-    
+
     love.graphics.pop()
     drawUI()
 end
@@ -356,6 +371,8 @@ function love.keypressed(key)
         Entities.setDebugMode(game.debugMode)
     elseif key == "f6" then
         Water.setDebug(not Water.debugMode)
+    elseif key == "f7" then
+        debugDrawEnabled = not debugDrawEnabled
     elseif key == "p" then game.state = (game.state == "playing") and "paused" or "playing"
     elseif key == "tab" then
         local p = Entities.player
