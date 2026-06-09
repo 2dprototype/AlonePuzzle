@@ -8,6 +8,7 @@ local Entities = require("entities")
 local Water = require("water")
 local Whale = require("whale")
 local b2debugDraw = require("b2debugDraw")
+local Vegetation = require("vegetation")
 
 local game = { debugMode = false, state = "playing" }
 local debugDrawEnabled = false
@@ -57,20 +58,48 @@ function love.load()
     -- Entities.createEnemy(-8900, -520, 12.5, 25, 0)
     -- Entities.createEnemy(-8850, -550, 15, 20, 0)
     
+    -- -- Populating Static Ground Structures
+    -- WorldManager.createBoundary(320, 500, 600, 10, 0)
+    -- WorldManager.createBoundary(-100, 350, 600, 10, 0.3)
+    -- WorldManager.createBoundary(-485, 261, 200, 10, 0)
+    -- WorldManager.createBoundary(-265, 589, 600, 10, -0.3)
+    -- WorldManager.createBoundary(-700, 605, 300, 10, 0)
+    -- WorldManager.createBoundary(-700, 678, 300, 10, 0)
+    -- WorldManager.createBoundary(-1260, 820, 300, 10, 0)
+    -- WorldManager.createBoundary(-1540, 825, 180, 10, 0)
+    -- WorldManager.createBoundary(-1565, 1005, 250, 10, 0)
+    -- WorldManager.createBoundary(-1300, 1005, 250, 10, 0)
+    -- WorldManager.createBoundary(-1685, 905, 10, 200, 0)
+    -- WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
+    -- WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
+    
     -- Populating Static Ground Structures
-    WorldManager.createBoundary(320, 500, 600, 10, 0)
-    WorldManager.createBoundary(-100, 350, 600, 10, 0.3)
-    WorldManager.createBoundary(-485, 261, 200, 10, 0)
-    WorldManager.createBoundary(-265, 589, 600, 10, -0.3)
-    WorldManager.createBoundary(-700, 605, 300, 10, 0)
-    WorldManager.createBoundary(-700, 678, 300, 10, 0)
-    WorldManager.createBoundary(-1260, 820, 300, 10, 0)
-    WorldManager.createBoundary(-1540, 825, 180, 10, 0)
-    WorldManager.createBoundary(-1565, 1005, 250, 10, 0)
-    WorldManager.createBoundary(-1300, 1005, 250, 10, 0)
-    WorldManager.createBoundary(-1685, 905, 10, 200, 0)
-    WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
-    WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
+    local floor1  = WorldManager.createBoundary(320, 500, 600, 10, 0)
+    local slope1  = WorldManager.createBoundary(-100, 350, 600, 10, 0.3)
+    local shelf1  = WorldManager.createBoundary(-485, 261, 200, 10, 0)
+    local slope2  = WorldManager.createBoundary(-265, 589, 600, 10, -0.3)
+    local ledge1  = WorldManager.createBoundary(-700, 605, 300, 10, 0)
+    local ledge2  = WorldManager.createBoundary(-700, 678, 300, 10, 0)
+    local platform= WorldManager.createBoundary(-1260, 820, 300, 10, 0)
+    local ledge3  = WorldManager.createBoundary(-1540, 825, 180, 10, 0)
+    local ledge4  = WorldManager.createBoundary(-1565, 1005, 250, 10, 0)
+    local ledge5  = WorldManager.createBoundary(-1300, 1005, 250, 10, 0)
+    WorldManager.createBoundary(-1685, 905, 10, 200, 0) -- Wall structure (Left clean, no grass)
+    local slope3  = WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
+    local bridge  = WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
+
+    -- Initialize vegetation storage
+    Vegetation.init()
+
+    -- Explicitly decide where to add grass in map creation part
+    -- if floor1 and floor1.body then Vegetation.populateBody(floor1.body, 600, 10) end
+    -- if slope1 and slope1.body then Vegetation.populateBody(slope1.body, 600, 10) end
+    if shelf1 and shelf1.body then Vegetation.populateBody(shelf1.body, 200, 10) end
+    -- if ledge1 and ledge1.body then Vegetation.populateBody(ledge1.body, 300, 10) end
+    -- if platform and platform.body then Vegetation.populateBody(platform.body, 300, 10) end
+    -- if slope3 and slope3.body then Vegetation.populateBody(slope3.body, 300, 10) end
+
+    
     -- new
     WorldManager.createBoundary(-1885, 905, 10, 200, 0)
     WorldManager.createBoundary(-1785, 1005, 210, 10, 0)
@@ -99,6 +128,7 @@ function love.load()
     Whale.create(-1480, 1300, "gentle", 45, 28)   
     Whale.create(-585, 2100, "aggressive", 45, 28)   
     
+           
     
     -- Water.createArea(-600, 350, 200, 150, 1.1, 0.8)    -- Slight float
     -- Water.createArea(0, 500, 300, 100, 0.8, 0.7)       -- Sinking water (danger)
@@ -124,16 +154,12 @@ end
 
 function love.update(dt)
     if game.state ~= "playing" then return end
-    
-    -- Fix: Clamp the delta time to a maximum of 1/30th of a second.
-    -- This prevents lag spikes from embedding bodies into the floor.
     local physicsDt = math.min(dt, 0.033)
     
     WorldManager.world:update(physicsDt)
     Entities.update(physicsDt)
     Whale.update(physicsDt, Entities.player, Entities.list)
-    
-    -- (The rest of your update code remains unchanged)
+    Vegetation.update(physicsDt, Entities.list)
     Water.update(Entities.list)
     Entities.checkCollisions()
     RopeSystem.updateVisuals()
@@ -173,6 +199,7 @@ function love.draw()
     else
         Entities.draw()
         RopeSystem.drawAll(game.debugMode)
+        Vegetation.draw()
         EffectsSystem.draw()
         Whale.draw(game.debugMode)
         Water.draw()
