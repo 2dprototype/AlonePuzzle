@@ -95,7 +95,7 @@ function love.load()
     -- Explicitly decide where to add grass in map creation part
     -- if floor1 and floor1.body then Vegetation.populateBody(floor1.body, 600, 10) end
     -- if slope1 and slope1.body then Vegetation.populateBody(slope1.body, 600, 10) end
-    if shelf1 and shelf1.body then Vegetation.populateBody(shelf1.body, 200, 10) end
+    if shelf1 and shelf1.body then Vegetation.populateBody(shelf1.body, 1.0) end
     -- if ledge1 and ledge1.body then Vegetation.populateBody(ledge1.body, 300, 10) end
     -- if platform and platform.body then Vegetation.populateBody(platform.body, 300, 10) end
     -- if slope3 and slope3.body then Vegetation.populateBody(slope3.body, 300, 10) end
@@ -472,7 +472,6 @@ function love.keypressed(key)
             Entities.player.autopilotEnabled = not Entities.player.autopilotEnabled
         end
     
-    -- Add this inside love.keypressed(key) function, near other key handlers
     elseif key == "v" then
         local player = Entities.player
         if not player or not player.body or player.body:isDestroyed() then return end
@@ -497,41 +496,32 @@ function love.keypressed(key)
                     end
 
                     if otherBody then
-                        -- Find the corresponding entity in Entities.list
-                        local otherEntity = nil
+                        local isValidTarget = false
+                        
+                        -- 1. Check if the body is an allowed active entity
                         for _, e in ipairs(Entities.list) do
                             if e.body == otherBody then
-                                otherEntity = e
+                                -- Restrict planting to these types:
+                                if e.type == "box" or e.type == "ball" or e.type == "grenade" or e.type == "tnt" or e.type == "nuke" then
+                                    isValidTarget = true
+                                end
                                 break
                             end
                         end
-
-                        -- Also check whales (they are stored separately)
-                        if not otherEntity then
-                            local whales = Whale.getAll()
-                            for _, w in ipairs(whales) do
-                                if w.body == otherBody then
-                                    otherEntity = w
+                        
+                        -- 2. If it wasn't an entity, check if it's a map boundary
+                        if not isValidTarget then
+                            for _, b in ipairs(WorldManager.boundaries) do
+                                if b.body == otherBody then
+                                    isValidTarget = true
                                     break
                                 end
                             end
                         end
 
-                        if otherEntity then
-                            -- Determine width and height based on entity type
-                            local w, h
-                            if otherEntity.w and otherEntity.h then
-                                w, h = otherEntity.w, otherEntity.h
-                            elseif otherEntity.r then
-                                w, h = otherEntity.r * 2, otherEntity.r * 2
-                            elseif otherEntity.data and otherEntity.data.w and otherEntity.data.h then
-                                w, h = otherEntity.data.w, otherEntity.data.h
-                            else
-                                w, h = 40, 40 -- fallback size
-                            end
-
-                            -- Add grass to the colliding object
-                            Vegetation.populateBody(otherBody, w, h, 1.0, 0)
+                        -- If valid, add the grass to the body dynamically
+                        if isValidTarget then
+                            Vegetation.populateBody(otherBody, 1.0)
                             addedToAny = true
                         end
                     end
@@ -540,9 +530,9 @@ function love.keypressed(key)
         end
 
         if not addedToAny then
-            print("No colliding object found to add grass.")
+            print("No valid colliding object found. Grass only grows on boxes, bounds, balls, and bombs.")
         else
-            print("Grass added to colliding object(s).")
+            print("Grass added to surface.")
         end
         
     elseif key == "lshift" then

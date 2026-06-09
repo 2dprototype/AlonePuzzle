@@ -79,22 +79,103 @@ function Vegetation.createGrass(body, localX, localY, w, h, localAngle)
     return grass
 end
 
--- Helper to populate a specific body's surface with grass blades
+-- Helper to populate a specific body's surface dynamically
 -- @param densityMulti: Multiplier for grass thickness (e.g., 1.0 is normal, 2.0 is very dense)
-function Vegetation.populateBody(body, width, height, densityMulti, localAngle)
+function Vegetation.populateBody(body, densityMulti)
     if not body or body:isDestroyed() then return end
-    localAngle = localAngle or 0
     densityMulti = densityMulti or 1.0
     
-    -- Tighter base stepping, modified by density
-    local step = 9 / densityMulti
-    local localTopY = -height / 2 
+    local fixtures = body:getFixtures()
+    if not fixtures or #fixtures == 0 then return end
     
-    -- Distribute with Jitter to prevent unnatural perfect straight lines
-    for localX = -width / 2 + 4, width / 2 - 4, step do
-        local jitterX = localX + (math.random() - 0.5) * (step * 0.8)
-        local jitterY = localTopY + (math.random() - 0.5) * 2.5 -- Slight depth variation
-        Vegetation.createGrass(body, jitterX, jitterY, nil, nil, localAngle)
+    for _, fixture in ipairs(fixtures) do
+        local shape = fixture:getShape()
+        local shapeType = shape:getType()
+        
+        if shapeType == "polygon" then
+            local points = {shape:getPoints()}
+            if #points >= 6 then -- Polygons have at least 3 vertices
+                local bestEdge = nil
+                local bestY = math.huge -- Looking for the lowest Y normal (points UP in screen space)
+                
+                local numPoints = #points / 2
+                for i = 1, numPoints do
+                    local idx1 = (i - 1) * 2 + 1
+                    local idx2 = (i % numPoints) * 2 + 1
+                    
+                    local lx1, ly1 = points[idx1], points[idx1+1]
+                    local lx2, ly2 = points[idx2], points[idx2+1]
+                    
+                    -- Convert local vertices to world coordinates to find true orientation
+                    local wx1, wy1 = body:getWorldPoint(lx1, ly1)
+                    local wx2, wy2 = body:getWorldPoint(lx2, ly2)
+                    
+                    local dx = wx2 - wx1
+                    local dy = wy2 - wy1
+                    
+                    -- World normal (assuming CCW winding)
+                    local nx, ny = dy, -dx
+                    local len = math.sqrt(nx*nx + ny*ny)
+                    if len > 0 then
+                        nx, ny = nx/len, ny/len
+                    end
+                    
+                    -- Is this the edge pointing most directly upward?
+                    if ny < bestY then
+                        bestY = ny
+                        bestEdge = {lx1, ly1, lx2, ly2}
+                    end
+                end
+                
+                -- Add grass to the topmost edge
+                if bestEdge then
+                    local lx1, ly1, lx2, ly2 = bestEdge[1], bestEdge[2], bestEdge[3], bestEdge[4]
+                    local dx, dy = lx2 - lx1, ly2 - ly1
+                    local length = math.sqrt(dx*dx + dy*dy)
+                    
+                    local step = 9 / densityMulti
+                    local lnx, lny = dy, -dx
+                    local localAngle = math.atan2(lny, lnx) + math.pi/2
+                    
+                    for d = 4, length - 4, step do
+                        local jitter = (math.random() - 0.5) * (step * 0.8)
+                        local jt = (d + jitter) / length
+                        jt = math.max(0, math.min(1, jt))
+                        
+                        local jx = lx1 + dx * jt
+                        local jy = ly1 + dy * jt
+                        
+                        -- Add slight depth variance along the normal
+                        local lenNorm = math.sqrt(lnx*lnx + lny*lny)
+                        if lenNorm > 0 then
+                            local depthJitter = (math.random() - 0.5) * 2.5
+                            jx = jx + (lnx/lenNorm) * depthJitter
+                            jy = jy + (lny/lenNorm) * depthJitter
+                        end
+                        
+                        Vegetation.createGrass(body, jx, jy, nil, nil, localAngle)
+                    end
+                end
+            end
+        elseif shapeType == "circle" then
+            local r = shape:getRadius()
+            local lcx, lcy = shape:getPoint()
+            local step = 9 / densityMulti
+            local circumference = 2 * math.pi * r
+            
+            -- Distribute circularly
+            for d = 0, circumference, step do
+                local theta = (d / circumference) * 2 * math.pi
+                -- Randomize angle slightly
+                local jitterTheta = theta + (math.random() - 0.5) * (step / r)
+                
+                local lx = lcx + r * math.cos(jitterTheta)
+                local ly = lcy + r * math.sin(jitterTheta)
+                local localAngle = jitterTheta + math.pi/2
+                
+                Vegetation.createGrass(body, lx, ly, nil, nil, localAngle)
+            end
+        end
     end
 end
 
