@@ -1,5 +1,6 @@
 local Vegetation = {}
 Vegetation.list = {}
+Vegetation.healRate = 0.15  -- Heal speed (0.15 per second = ~6.7 sec from full burn to green)
 
 -- Initialize or clear vegetation data
 function Vegetation.init()
@@ -37,7 +38,7 @@ function Vegetation.createGrass(body, localX, localY, w, h, localAngle)
         -- Dynamic bending variables
         angle = 0,                       
         angularVelocity = 0,
-        stiffness = 10 + math.random(12),
+        stiffness = 0 + math.random(12),
         damping = 4.5 + math.random() * 1.5,
         maxBend = math.pi / 1.5,
         
@@ -97,7 +98,7 @@ function Vegetation.populateBody(body, width, height, densityMulti, localAngle)
     end
 end
 
--- Update loop simulating ambient environment physics and real-time synchronization
+-- Update loop simulating ambient environment physics, healing, and real-time synchronization
 function Vegetation.update(dt, entitiesList)
     local time = love.timer.getTime()
     
@@ -148,6 +149,11 @@ function Vegetation.update(dt, entitiesList)
                         end
                     end
                 end
+            end
+            
+            -- 5. Healing: slowly turn burnt grass back to green over time
+            if item.burnFactor > 0 then
+                item.burnFactor = math.max(0, item.burnFactor - Vegetation.healRate * dt)
             end
         end
     end
@@ -212,6 +218,11 @@ function Vegetation.draw()
     local segments = 4 -- Keeps performance solid while allowing smooth curving
     
     for _, item in ipairs(Vegetation.list) do
+        -- CRITICAL FIX: Skip any grass attached to a destroyed body
+        if not item.body or item.body:isDestroyed() then
+            goto continue
+        end
+        
         love.graphics.push()
         love.graphics.translate(item.x, item.y)
         
@@ -274,6 +285,7 @@ function Vegetation.draw()
         end
         
         love.graphics.pop()
+        ::continue::
     end
     -- Reset color to prevent tinting other game assets
     love.graphics.setColor(1, 1, 1, 1)

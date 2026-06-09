@@ -25,14 +25,15 @@ function love.load()
     -- Instantiate Scene Objects
     -- Entities.createPlayer(-820, 0)
     -- Entities.createPlayer(-1135, 1505)
-    Entities.createPlayer(-1385, 800)
+    -- Entities.createPlayer(-1385, 800)
+    Entities.createPlayer(-500, 200)
     
     -- Populating Physical Rigid Props
     Entities.createBox(-800, 570, 8, 80, 0, 2, 0.2)
     Entities.createBox(-840, 570, 8, 80, 0, 2, 0.2)
     Entities.createBox(-820, 300, 80, 30, 0, 0.6, 0.2)
     Entities.createBall(260, 430, 12.5, -700, 2, 0.5)
-    Entities.createBall(-390, 150, 25, -15, 1, 0.1)
+    Entities.createBall(-390, 150, 25, 0, 1, 0.1)
     
     
     Entities.createBox(-1250, 700, 50, 50, 0, 100, 5, "", 1000000000)
@@ -470,6 +471,80 @@ function love.keypressed(key)
         if Entities.player and Entities.player.body and not Entities.player.body:isDestroyed() then
             Entities.player.autopilotEnabled = not Entities.player.autopilotEnabled
         end
+    
+    -- Add this inside love.keypressed(key) function, near other key handlers
+    elseif key == "v" then
+        local player = Entities.player
+        if not player or not player.body or player.body:isDestroyed() then return end
+
+        -- Get all contacts from the physics world
+        local contacts = WorldManager.world:getContacts()
+        local addedToAny = false
+
+        for _, contact in ipairs(contacts) do
+            if not contact:isDestroyed() and contact:isEnabled() and contact:isTouching() then
+                local fa, fb = contact:getFixtures()
+                if fa and fb and not fa:isDestroyed() and not fb:isDestroyed() then
+                    local bodyA = fa:getBody()
+                    local bodyB = fb:getBody()
+                    local otherBody = nil
+
+                    -- Identify the body that is NOT the player
+                    if bodyA == player.body then
+                        otherBody = bodyB
+                    elseif bodyB == player.body then
+                        otherBody = bodyA
+                    end
+
+                    if otherBody then
+                        -- Find the corresponding entity in Entities.list
+                        local otherEntity = nil
+                        for _, e in ipairs(Entities.list) do
+                            if e.body == otherBody then
+                                otherEntity = e
+                                break
+                            end
+                        end
+
+                        -- Also check whales (they are stored separately)
+                        if not otherEntity then
+                            local whales = Whale.getAll()
+                            for _, w in ipairs(whales) do
+                                if w.body == otherBody then
+                                    otherEntity = w
+                                    break
+                                end
+                            end
+                        end
+
+                        if otherEntity then
+                            -- Determine width and height based on entity type
+                            local w, h
+                            if otherEntity.w and otherEntity.h then
+                                w, h = otherEntity.w, otherEntity.h
+                            elseif otherEntity.r then
+                                w, h = otherEntity.r * 2, otherEntity.r * 2
+                            elseif otherEntity.data and otherEntity.data.w and otherEntity.data.h then
+                                w, h = otherEntity.data.w, otherEntity.data.h
+                            else
+                                w, h = 40, 40 -- fallback size
+                            end
+
+                            -- Add grass to the colliding object
+                            Vegetation.populateBody(otherBody, w, h, 1.0, 0)
+                            addedToAny = true
+                        end
+                    end
+                end
+            end
+        end
+
+        if not addedToAny then
+            print("No colliding object found to add grass.")
+        else
+            print("Grass added to colliding object(s).")
+        end
+        
     elseif key == "lshift" then
         local p = Entities.player
         if p and p.ropeIds and #p.ropeIds == 2 then
