@@ -75,30 +75,19 @@ function love.load()
     -- WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
     
     -- Populating Static Ground Structures
-    local floor1  = WorldManager.createBoundary(320, 500, 600, 10, 0)
-    local slope1  = WorldManager.createBoundary(-100, 350, 600, 10, 0.3)
+    WorldManager.createBoundary(320, 500, 600, 10, 0)
+    WorldManager.createBoundary(-100, 350, 600, 10, 0.3)
     local shelf1  = WorldManager.createBoundary(-485, 261, 200, 10, 0)
-    local slope2  = WorldManager.createBoundary(-265, 589, 600, 10, -0.3)
-    local ledge1  = WorldManager.createBoundary(-700, 605, 300, 10, 0)
-    local ledge2  = WorldManager.createBoundary(-700, 678, 300, 10, 0)
-    local platform= WorldManager.createBoundary(-1260, 820, 300, 10, 0)
-    local ledge3  = WorldManager.createBoundary(-1540, 825, 180, 10, 0)
-    local ledge4  = WorldManager.createBoundary(-1565, 1005, 250, 10, 0)
-    local ledge5  = WorldManager.createBoundary(-1300, 1005, 250, 10, 0)
-    WorldManager.createBoundary(-1685, 905, 10, 200, 0) -- Wall structure (Left clean, no grass)
-    local slope3  = WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
-    local bridge  = WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
-
-    -- Initialize vegetation storage
-    Vegetation.init()
-
-    -- Explicitly decide where to add grass in map creation part
-    -- if floor1 and floor1.body then Vegetation.populateBody(floor1.body, 600, 10) end
-    -- if slope1 and slope1.body then Vegetation.populateBody(slope1.body, 600, 10) end
-    if shelf1 and shelf1.body then Vegetation.populateBody(shelf1.body, 1.0) end
-    -- if ledge1 and ledge1.body then Vegetation.populateBody(ledge1.body, 300, 10) end
-    -- if platform and platform.body then Vegetation.populateBody(platform.body, 300, 10) end
-    -- if slope3 and slope3.body then Vegetation.populateBody(slope3.body, 300, 10) end
+    WorldManager.createBoundary(-265, 589, 600, 10, -0.3)
+    WorldManager.createBoundary(-700, 605, 300, 10, 0)
+    WorldManager.createBoundary(-700, 678, 300, 10, 0)
+    WorldManager.createBoundary(-1260, 820, 300, 10, 0)
+    WorldManager.createBoundary(-1540, 825, 180, 10, 0)
+    WorldManager.createBoundary(-1565, 1005, 250, 10, 0)
+    WorldManager.createBoundary(-1300, 1005, 250, 10, 0)
+    WorldManager.createBoundary(-1685, 905, 10, 200, 0) 
+    WorldManager.createBoundary(-980, 749, 300, 10, -0.5)
+    WorldManager.createBoundary(-440, 620, 80, 5, 0.4)
 
     
     -- new
@@ -119,6 +108,14 @@ function love.load()
     WorldManager.createBoundary(-1520, 555, 10, 530, 0)
     WorldManager.createBoundary(-1465, 540, 10, 500, 0)
     WorldManager.createBoundary(-1575, 680, 100, 10, 0)
+    
+    -- edge
+    WorldManager.createBoundary(-1885, -195, 10, 2000, 0)
+    WorldManager.createBoundary(-390, -1200, 3000, 10, 0)
+    
+    -- Initialize vegetation storage
+    Vegetation.init()
+    if shelf1 and shelf1.body then Vegetation.populateBody(shelf1.body, 1.0) end
     
     -- Create water areas
     Water.createArea(-1880, 850, 190, 150, 0.8, 0.6, "basic") 
